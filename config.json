@@ -1,0 +1,274 @@
+{
+    "device_address": "emulator-5554",
+    "scan_interval": 1,
+    "no_match_timeout": 150,
+    "similarity_threshold": 0.8,
+    "enable_random_click": false,
+    "random_click_interval": 30,
+    "template_order": [
+        "sdfsf.png",
+        "1.png",
+        "xcvvx.png",
+        "vxcvxcvsre.png",
+        "667657.png",
+        "9987.png",
+        "xr555fghf.png",
+        "12312421423.png",
+        "141425345.png",
+        "90-90-9.png",
+        "dfdg.png",
+        "mn,,n,.png",
+        "454rete.png",
+        "66767.png",
+        "sfsdf44.png",
+        "p==.png",
+        "dsf.png",
+        "..'[[.png",
+        "vbnb.png"
+    ],
+    "template_counts": {
+        "sdfsf.png": 8,
+        "1.png": 10,
+        "xcvvx.png": 1,
+        "vxcvxcvsre.png": 0,
+        "667657.png": 7,
+        "9987.png": 0,
+        "xr555fghf.png": 0,
+        "12312421423.png": 0,
+        "141425345.png": 0,
+        "90-90-9.png": 1,
+        "dfdg.png": 0,
+        "mn,,n,.png": 0,
+        "454rete.png": 0,
+        "66767.png": 0,
+        "sfsdf44.png": 0,
+        "p==.png": 1,
+        "dsf.png": 0,
+        "..'[[.png": 1,
+        "vbnb.png": 4
+    },
+    "template_actions": {
+        "sdfsf.png": "click",
+        "1.png": "click",
+        "xcvvx.png": "back",
+        "vxcvxcvsre.png": "click",
+        "667657.png": "click",
+        "9987.png": "click",
+        "xr555fghf.png": "double_click",
+        "12312421423.png": "double_click",
+        "141425345.png": "double_click",
+        "90-90-9.png": "back",
+        "dfdg.png": "click",
+        "mn,,n,.png": "double_click",
+        "454rete.png": "double_click",
+        "66767.png": "click",
+        "sfsdf44.png": "click",
+        "p==.png": "click",
+        "dsf.png": "double_click",
+        "..'[[.png": "back",
+        "vbnb.png": "click"
+    },
+    "instances": [
+        {
+            "device_address": "emulator-5554",
+            "scan_interval": 1,
+            "no_match_timeout": 150,
+            "similarity_threshold": 0.8,
+            "match_grayscale": true,
+            "enable_random_click": false,
+            "random_click_interval": 30,
+            "no_match_action": "none",
+            "no_match_interval": 30,
+            "no_match_coords": [
+                500,
+                500
+            ],
+            "fallback_final_action": "none",
+            "fallback_final_coords": [
+                500,
+                500
+            ]
+        },
+        {
+            "device_address": "emulator-5556",
+            "scan_interval": 1,
+            "no_match_timeout": 150,
+            "similarity_threshold": 0.8,
+            "match_grayscale": true,
+            "enable_random_click": false,
+            "random_click_interval": 30,
+            "no_match_action": "fallback_list",
+            "no_match_interval": 30,
+            "no_match_coords": [
+                500,
+                500
+            ],
+            "fallback_final_action": "none",
+            "fallback_final_coords": [
+                500,
+                500
+            ]
+        },
+        {
+            "device_address": "emulator-5558",
+            "scan_interval": 1,
+            "no_match_timeout": 150,
+            "similarity_threshold": 0.9,
+            "match_grayscale": true,
+            "enable_random_click": false,
+            "random_click_interval": 30,
+            "no_match_action": "fallback_list",
+            "no_match_interval": 30,
+            "no_match_coords": [
+                500,
+                500
+            ],
+            "fallback_final_action": "none",
+            "fallback_final_coords": [
+                500,
+                500
+            ]
+        }
+    ],
+    "template_offsets": {
+        "12312421423.png": [
+            -932,
+            -860
+        ],
+        "141425345.png": [
+            48,
+            50
+        ],
+        "90-90-9.png": [
+            350,
+            198
+        ],
+        "dfdg.png": [
+            -626,
+            -202
+        ],
+        "mn,,n,.png": [
+            44,
+            34
+        ],
+        "454rete.png": [
+            44,
+            36
+        ],
+        "66767.png": [
+            30,
+            20
+        ],
+        "sfsdf44.png": [
+            258,
+            50
+        ],
+        "p==.png": [
+            51,
+            43
+        ],
+        "dsf.png": [
+            6,
+            -46
+        ],
+        "..'[[.png": [
+            -334,
+            131
+        ],
+        "vbnb.png": [
+            42,
+            43
+        ]
+    },
+    "no_match_action": "none",
+    "no_match_interval": 30,
+    "no_match_coords": [
+        500,
+        500
+    ],
+    "fallback_template_order": [
+        "y7t7y.png",
+        "dfgd.png",
+        "24234.png",
+        "89u.png",
+        "yuh.png",
+        "dfg.png",
+        "huj.png",
+        "54534.png",
+        "cdxd.png",
+        "dcv.png"
+    ],
+    "fallback_template_counts": {
+        "y7t7y.png": 0,
+        "dfgd.png": 0,
+        "24234.png": 0,
+        "89u.png": 0,
+        "yuh.png": 0,
+        "dfg.png": 1,
+        "huj.png": 0,
+        "54534.png": 0,
+        "cdxd.png": 1,
+        "dcv.png": 1
+    },
+    "fallback_template_actions": {
+        "y7t7y.png": "double_click",
+        "dfgd.png": "click",
+        "24234.png": "click",
+        "89u.png": "click",
+        "yuh.png": "double_click",
+        "dfg.png": "double_click",
+        "huj.png": "click",
+        "54534.png": "click",
+        "cdxd.png": "click",
+        "dcv.png": "click"
+    },
+    "fallback_template_offsets": {
+        "y7t7y.png": [
+            44,
+            40
+        ],
+        "dfgd.png": [
+            716,
+            -116
+        ],
+        "24234.png": [
+            -640,
+            -18
+        ],
+        "89u.png": [
+            -696,
+            -158
+        ],
+        "yuh.png": [
+            -1376,
+            -624
+        ],
+        "dfg.png": [
+            26,
+            -26
+        ],
+        "huj.png": [
+            -662,
+            -106
+        ],
+        "54534.png": [
+            -654,
+            -666
+        ],
+        "cdxd.png": [
+            -652,
+            -40
+        ],
+        "dcv.png": [
+            -804,
+            -826
+        ]
+    },
+    "match_grayscale": true,
+    "double_click_interval": 1,
+    "fallback_final_action": "none",
+    "fallback_final_coords": [
+        500,
+        500
+    ]
+}

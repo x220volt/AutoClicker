@@ -1,0 +1,2269 @@
+import customtkinter as ctk
+import tkinter as tk
+from PIL import Image, ImageTk
+import os
+import threading
+import time
+import cv2
+import numpy as np
+import queue
+from main import TeraboxClicker, CONFIG_PATH
+
+VERSION = "v0.3.3"
+
+# 앱 전역 테마를 Dark 모드로 고정
+ctk.set_appearance_mode("Dark")
+
+NO_MATCH_ACTION_MAP = {
+    "fallback_list": "📋 미매칭 복구 템플릿 목록 매칭 (Fallback Match List)",
+    "none": "사용 안 함 (Disabled)",
+    "random_click": "🎲 화면 랜덤 클릭 (Random Click)",
+    "custom_click": "👆 특정 좌표 클릭 (Custom Click)",
+    "custom_double_click": "✌️ 특정 좌표 클릭클릭 (Double Click)",
+    "back": "↩️ 뒤로가기 (Back Key)"
+}
+REVERSE_NO_MATCH_ACTION_MAP = {v: k for k, v in NO_MATCH_ACTION_MAP.items()}
+
+
+class TemplatePreviewTooltip:
+    """Hover preview popup showing template image thumbnail, dimensions, and offset."""
+    _instance = None
+    _image_cache = {}
+
+    @classmethod
+    def get_instance(cls, root_window=None):
+        if cls._instance is None:
+            cls._instance = cls(root_window)
+        elif root_window is not None:
+            cls._instance.root = root_window
+        return cls._instance
+
+    def __init__(self, root_window=None):
+        self.root = root_window
+        self.tip_window = None
+        self._hover_after_id = None
+        self._scheduled_widget = None
+
+    def schedule_show(self, widget, image_path, title_text="", offset_text=""):
+        self.cancel()
+        self._scheduled_widget = widget
+        self._hover_after_id = widget.after(
+            150, lambda: self.show(widget, image_path, title_text, offset_text)
+        )
+
+    def cancel(self, event=None):
+        if self._hover_after_id and self._scheduled_widget:
+            try:
+                if self._scheduled_widget.winfo_exists():
+                    self._scheduled_widget.after_cancel(self._hover_after_id)
+            except Exception:
+                pass
+            self._hover_after_id = None
+        self._scheduled_widget = None
+        self.hide()
+
+    def hide(self):
+        if self.tip_window is not None:
+            try:
+                if self.tip_window.winfo_exists():
+                    self.tip_window.destroy()
+            except Exception:
+                pass
+            self.tip_window = None
+
+    def show(self, widget, image_path, title_text="", offset_text=""):
+        if not os.path.exists(image_path):
+            return
+        try:
+            if not widget.winfo_exists():
+                return
+        except Exception:
+            return
+
+        self.hide()
+
+        try:
+            stat = os.stat(image_path)
+            sig = (image_path, stat.st_mtime_ns)
+            if sig in self._image_cache:
+                photo_img, orig_w, orig_h = self._image_cache[sig]
+            else:
+                pil_img = Image.open(image_path)
+                orig_w, orig_h = pil_img.size
+                
+                max_w, max_h = 200, 140
+                scale = min(max_w / max(1, orig_w), max_h / max(1, orig_h), 1.0)
+                if scale < 1.0:
+                    new_w = max(1, int(orig_w * scale))
+                    new_h = max(1, int(orig_h * scale))
+                    scaled_img = pil_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                else:
+                    scaled_img = pil_img
+
+                photo_img = ImageTk.PhotoImage(scaled_img)
+                self._image_cache[sig] = (photo_img, orig_w, orig_h)
+
+            parent = self.root if (self.root and self.root.winfo_exists()) else widget.winfo_toplevel()
+            self.tip_window = tw = tk.Toplevel(parent)
+            tw.wm_overrideredirect(True)
+            tw.wm_attributes("-topmost", True)
+            try:
+                tw.wm_attributes("-alpha", 0.97)
+            except Exception:
+                pass
+
+            container = tk.Frame(
+                tw,
+                background="#1A1D20",
+                highlightbackground="#3B82F6",
+                highlightthickness=1,
+                padx=8,
+                pady=6,
+            )
+            container.pack(fill="both", expand=True)
+
+            header_text = f"🖼️ {title_text or os.path.basename(image_path)}"
+            title_lbl = tk.Label(
+                container,
+                text=header_text,
+                font=("Segoe UI", 9, "bold"),
+                foreground="#60A5FA",
+                background="#1A1D20",
+                anchor="w",
+            )
+            title_lbl.pack(fill="x", pady=(0, 4))
+
+            img_lbl = tk.Label(
+                container,
+                image=photo_img,
+                background="#0D1117",
+                relief="solid",
+                borderwidth=1,
+            )
+            img_lbl.image = photo_img
+            img_lbl.pack(pady=(0, 4))
+
+            meta_info = f"크기: {orig_w}x{orig_h}px"
+            if offset_text:
+                meta_info += f"  |  {offset_text}"
+            info_lbl = tk.Label(
+                container,
+                text=meta_info,
+                font=("Segoe UI", 8),
+                foreground="#9CA3AF",
+                background="#1A1D20",
+            )
+            info_lbl.pack(fill="x")
+
+            tw.update_idletasks()
+            w_width = tw.winfo_reqwidth()
+            w_height = tw.winfo_reqheight()
+
+            x = widget.winfo_rootx() + widget.winfo_width() + 8
+            y = widget.winfo_rooty() - 10
+
+            screen_w = tw.winfo_screenwidth()
+            screen_h = tw.winfo_screenheight()
+
+            if x + w_width > screen_w - 10:
+                x = widget.winfo_rootx() - w_width - 8
+            if y + w_height > screen_h - 40:
+                y = screen_h - w_height - 40
+            if y < 10:
+                y = 10
+
+            tw.wm_geometry(f"+{x}+{y}")
+        except Exception:
+            self.hide()
+
+
+class SettingsWindow(ctk.CTkToplevel):
+    def __init__(self, parent_frame):
+        super().__init__(parent_frame)
+        self.parent_frame = parent_frame
+        self.clicker = parent_frame.clicker
+        self._save_after_id = None
+        self.title(f"Settings - {self.clicker.device_address}")
+        self.geometry("440x720")
+        self.resizable(False, False)
+        
+        # 메인 창에 종속 설정 및 모달 효과
+        self.transient(parent_frame.winfo_toplevel())
+        self.grab_set()
+
+        # Header
+        self.header_label = ctk.CTkLabel(self, text=f"⚙️ Settings ({self.clicker.device_address})", font=ctk.CTkFont(size=16, weight="bold"))
+        self.header_label.pack(pady=(15, 10))
+
+        # Scan Interval
+        self.interval_label = ctk.CTkLabel(self, text="스캔 간격 (Scan Interval, sec):", anchor="w")
+        self.interval_label.pack(fill="x", padx=30)
+        self.interval_entry = ctk.CTkEntry(self)
+        self.interval_entry.insert(0, str(self.clicker.scan_interval))
+        self.interval_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.interval_entry.bind("<KeyRelease>", self.schedule_save)
+        self.interval_entry.bind("<FocusOut>", lambda e: self.save_settings())
+
+        # Double Click Interval
+        self.double_click_label = ctk.CTkLabel(self, text="더블클릭(클릭클릭) 간격 (Double-Click Interval, sec):", anchor="w")
+        self.double_click_label.pack(fill="x", padx=30)
+        self.double_click_entry = ctk.CTkEntry(self)
+        self.double_click_entry.insert(0, str(getattr(self.clicker, 'double_click_interval', 1.0)))
+        self.double_click_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.double_click_entry.bind("<KeyRelease>", self.schedule_save)
+        self.double_click_entry.bind("<FocusOut>", lambda e: self.save_settings())
+
+        # Similarity Threshold
+        self.threshold_label = ctk.CTkLabel(self, text="이미지 유사도 임계값 (Similarity Threshold 0.1~1.0):", anchor="w")
+        self.threshold_label.pack(fill="x", padx=30)
+        self.threshold_entry = ctk.CTkEntry(self)
+        self.threshold_entry.insert(0, str(self.clicker.similarity_threshold))
+        self.threshold_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.threshold_entry.bind("<KeyRelease>", self.schedule_save)
+        self.threshold_entry.bind("<FocusOut>", lambda e: self.save_settings())
+        self.grayscale_var = ctk.StringVar(
+            value="on" if self.clicker.match_grayscale else "off"
+        )
+        self.grayscale_switch = ctk.CTkSwitch(
+            self,
+            text="고속 그레이스케일 매칭 (색상 구분 필요 시 끄기)",
+            variable=self.grayscale_var,
+            onvalue="on",
+            offvalue="off",
+            command=self.save_settings,
+        )
+        self.grayscale_switch.pack(fill="x", padx=30, pady=(0, 8))
+
+
+        # Timeout Alert
+        self.timeout_label = ctk.CTkLabel(self, text="매칭 없음 경고 알림 시간 (No-match Alert sec, 0: 끄기):", anchor="w")
+        self.timeout_label.pack(fill="x", padx=30)
+        self.timeout_entry = ctk.CTkEntry(self)
+        self.timeout_entry.insert(0, str(self.clicker.no_match_timeout))
+        self.timeout_entry.pack(fill="x", padx=30, pady=(0, 10))
+        self.timeout_entry.bind("<KeyRelease>", self.schedule_save)
+        self.timeout_entry.bind("<FocusOut>", lambda e: self.save_settings())
+
+        # --- No-Match Action Section ---
+        self.no_match_section_label = ctk.CTkLabel(self, text="⚡ 매칭 미발생 시 자동 동작 (No-Match Action):", anchor="w", font=ctk.CTkFont(weight="bold"))
+        self.no_match_section_label.pack(fill="x", padx=30, pady=(5, 2))
+
+        curr_action = getattr(self.clicker, 'no_match_action', 'none')
+        curr_label = NO_MATCH_ACTION_MAP.get(curr_action, "사용 안 함 (Disabled)")
+        self.no_match_combo = ctk.CTkOptionMenu(
+            self, 
+            values=list(NO_MATCH_ACTION_MAP.values()),
+            command=self.on_action_changed
+        )
+        self.no_match_combo.set(curr_label)
+        self.no_match_combo.pack(fill="x", padx=30, pady=(0, 8))
+
+        self.no_match_interval_label = ctk.CTkLabel(self, text="동작 대기 시간 (Action Interval, sec):", anchor="w")
+        self.no_match_interval_label.pack(fill="x", padx=30)
+        self.no_match_interval_entry = ctk.CTkEntry(self)
+        self.no_match_interval_entry.insert(0, str(getattr(self.clicker, 'no_match_interval', 30)))
+        self.no_match_interval_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.no_match_interval_entry.bind("<KeyRelease>", self.schedule_save)
+        self.no_match_interval_entry.bind("<FocusOut>", lambda e: self.save_settings())
+
+        # Custom Coordinate Frame (For Custom Click & Custom Double Click)
+        self.coord_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.coord_frame.pack(fill="x", padx=30, pady=(0, 10))
+
+        coords = getattr(self.clicker, 'no_match_coords', [500, 500])
+        self.coord_x_label = ctk.CTkLabel(self.coord_frame, text="X:")
+        self.coord_x_label.pack(side="left", padx=(0, 3))
+        self.coord_x_entry = ctk.CTkEntry(self.coord_frame, width=70)
+        self.coord_x_entry.insert(0, str(coords[0]))
+        self.coord_x_entry.pack(side="left", padx=(0, 10))
+        self.coord_x_entry.bind("<KeyRelease>", self.schedule_save)
+        self.coord_x_entry.bind("<FocusOut>", lambda e: self.save_settings())
+
+        self.coord_y_label = ctk.CTkLabel(self.coord_frame, text="Y:")
+        self.coord_y_label.pack(side="left", padx=(0, 3))
+        self.coord_y_entry = ctk.CTkEntry(self.coord_frame, width=70)
+        self.coord_y_entry.insert(0, str(coords[1]))
+        self.coord_y_entry.pack(side="left", padx=(0, 10))
+        self.coord_y_entry.bind("<KeyRelease>", self.schedule_save)
+        self.coord_y_entry.bind("<FocusOut>", lambda e: self.save_settings())
+
+        self.pick_coord_btn = ctk.CTkButton(
+            self.coord_frame, 
+            text="🎯 화면에서 좌표 선택", 
+            width=140,
+            command=self.pick_coords_from_screen
+        )
+        self.pick_coord_btn.pack(side="right")
+
+        self.update_coord_frame_visibility(curr_action)
+
+        # Close Button
+        self.close_btn = ctk.CTkButton(self, text="Close (닫기)", command=self.close_window)
+        self.close_btn.pack(fill="x", padx=30, pady=(10, 15))
+
+        self.protocol("WM_DELETE_WINDOW", self.close_window)
+
+    def on_action_changed(self, choice):
+        action_key = REVERSE_NO_MATCH_ACTION_MAP.get(choice, "none")
+        self.update_coord_frame_visibility(action_key)
+        self.save_settings()
+
+    def update_coord_frame_visibility(self, action_key):
+        if action_key in ("custom_click", "custom_double_click"):
+            self.coord_frame.pack(fill="x", padx=30, pady=(0, 10))
+        else:
+            self.coord_frame.pack_forget()
+
+    def pick_coords_from_screen(self):
+        try:
+            initial_x = int(self.coord_x_entry.get().strip())
+            initial_y = int(self.coord_y_entry.get().strip())
+        except ValueError:
+            initial_x = initial_y = None
+
+        app = self.parent_frame.app_owner
+        if not app.opencv_lock.acquire(blocking=False):
+            self.parent_frame.log_message("다른 화면 선택 창이 이미 열려 있습니다.")
+            return
+
+        self.pick_coord_btn.configure(state="disabled")
+
+        def finish_picker():
+            app.opencv_lock.release()
+
+            def enable_button():
+                if self.winfo_exists():
+                    self.pick_coord_btn.configure(state="normal")
+
+            app.post_to_ui(enable_button)
+
+        def pick_task():
+            window_name = None
+            try:
+                screen = self.clicker.capture_screen(grayscale=False)
+                if screen is None:
+                    self.parent_frame.log_message("좌표 선택용 화면 캡처에 실패했습니다.")
+                    return
+
+                height, width = screen.shape[:2]
+                selected_pt = [
+                    width // 2 if initial_x is None else max(0, min(width - 1, initial_x)),
+                    height // 2 if initial_y is None else max(0, min(height - 1, initial_y)),
+                ]
+                window_name = "[Pick Target Coordinates] Click point -> Enter to confirm"
+                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(window_name, width // 2, (height + 60) // 2)
+
+                def update_preview():
+                    display = screen.copy()
+                    x, y = selected_pt
+                    cv2.circle(display, (x, y), 8, (0, 0, 255), 2)
+                    cv2.drawMarker(display, (x, y), (0, 0, 255), cv2.MARKER_CROSS, 22, 2)
+                    banner = np.full((60, width, 3), 30, dtype=np.uint8)
+                    cv2.putText(banner, f"Selected: ({x}, {y})", (15, 25),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+                    cv2.putText(banner,
+                                "Click screen -> Enter/Space: Confirm, 'c'/ESC: Cancel",
+                                (15, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                (220, 220, 220), 1, cv2.LINE_AA)
+                    cv2.imshow(window_name, np.vstack([display, banner]))
+
+                def on_mouse(event, mouse_x, mouse_y, flags, param):
+                    if event == cv2.EVENT_LBUTTONDOWN and 0 <= mouse_y < height and 0 <= mouse_x < width:
+                        selected_pt[:] = [mouse_x, mouse_y]
+                        update_preview()
+
+                cv2.setMouseCallback(window_name, on_mouse)
+                update_preview()
+                cancelled = False
+                while True:
+                    key = cv2.waitKey(30) & 0xFF
+                    if key in (13, 32):
+                        break
+                    if key in (ord("c"), ord("C"), 27):
+                        cancelled = True
+                        break
+                    try:
+                        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                            cancelled = True
+                            break
+                    except cv2.error:
+                        cancelled = True
+                        break
+
+                if not cancelled:
+                    def update_entries():
+                        if not self.winfo_exists():
+                            return
+                        self.coord_x_entry.delete(0, "end")
+                        self.coord_x_entry.insert(0, str(selected_pt[0]))
+                        self.coord_y_entry.delete(0, "end")
+                        self.coord_y_entry.insert(0, str(selected_pt[1]))
+                        self.save_settings()
+
+                    app.post_to_ui(update_entries)
+            except Exception as error:
+                self.parent_frame.log_message(f"좌표 선택 중 오류: {error}")
+            finally:
+                if window_name:
+                    try:
+                        cv2.destroyWindow(window_name)
+                    except cv2.error:
+                        pass
+                finish_picker()
+
+        threading.Thread(target=pick_task, daemon=True).start()
+
+    def _apply_form_values(self):
+        try:
+            value = float(self.interval_entry.get().strip())
+            if value >= 0.1:
+                self.clicker.scan_interval = int(value) if value.is_integer() else value
+        except ValueError:
+            pass
+
+        try:
+            value = float(self.double_click_entry.get().strip())
+            if value >= 0.01:
+                self.clicker.double_click_interval = int(value) if value.is_integer() else value
+        except ValueError:
+            pass
+
+        try:
+            value = float(self.threshold_entry.get().strip())
+            if 0.0 < value <= 1.0:
+                self.clicker.similarity_threshold = value
+        except ValueError:
+            pass
+        self.clicker.match_grayscale = self.grayscale_var.get() == "on"
+
+
+        try:
+            value = float(self.timeout_entry.get().strip())
+            if value >= 0:
+                self.clicker.no_match_timeout = int(value) if value.is_integer() else value
+        except ValueError:
+            pass
+
+        action_key = REVERSE_NO_MATCH_ACTION_MAP.get(self.no_match_combo.get(), "none")
+        self.clicker.no_match_action = action_key
+        self.clicker.enable_random_click = action_key == "random_click"
+
+        try:
+            value = float(self.no_match_interval_entry.get().strip())
+            if value >= 0.1:
+                value = int(value) if value.is_integer() else value
+                self.clicker.no_match_interval = value
+                self.clicker.random_click_interval = value
+        except ValueError:
+            pass
+
+        try:
+            self.clicker.no_match_coords = [
+                int(self.coord_x_entry.get().strip()),
+                int(self.coord_y_entry.get().strip()),
+            ]
+        except ValueError:
+            pass
+
+    def schedule_save(self, event=None):
+        self._apply_form_values()
+        if self._save_after_id is not None:
+            self.after_cancel(self._save_after_id)
+        self._save_after_id = self.after(400, self._persist_settings)
+
+    def _persist_settings(self):
+        self._save_after_id = None
+        self.clicker.save_config(include_templates=False)
+        self.parent_frame.app_owner.save_app_config()
+
+    def save_settings(self, event=None):
+        self._apply_form_values()
+        if self._save_after_id is not None:
+            self.after_cancel(self._save_after_id)
+            self._save_after_id = None
+        self._persist_settings()
+
+    def close_window(self):
+        self.save_settings()
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+
+
+class AddInstanceWindow(ctk.CTkToplevel):
+    def __init__(self, parent_app):
+        super().__init__(parent_app)
+        self.parent_app = parent_app
+        self.title("인스턴스 탭 추가 / 선택")
+        self.geometry("460x480")
+        self.resizable(False, False)
+
+        self.transient(parent_app)
+        self.grab_set()
+
+        self.header_label = ctk.CTkLabel(self, text="➕ 새 인스턴스 탭 추가", font=ctk.CTkFont(size=16, weight="bold"))
+        self.header_label.pack(pady=(15, 10))
+
+        # 검색된 디바이스 영역
+        self.dev_frame = ctk.CTkFrame(self)
+        self.dev_frame.pack(fill="both", expand=True, padx=20, pady=5)
+
+        self.dev_title = ctk.CTkLabel(self.dev_frame, text="📱 검색된 ADB 디바이스 목록 (선택):", font=ctk.CTkFont(weight="bold"))
+        self.dev_title.pack(anchor="w", padx=15, pady=(10, 5))
+
+        self.scroll_frame = ctk.CTkScrollableFrame(self.dev_frame, height=200)
+        self.scroll_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.checkbox_vars = {} # dev_addr -> BooleanVar
+
+        self.loading_label = ctk.CTkLabel(self.scroll_frame, text="디바이스 검색 중 (ADB scanning)...", text_color="gray")
+        self.loading_label.pack(pady=20)
+
+        # 수동 주소 입력 영역
+        self.custom_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.custom_frame.pack(fill="x", padx=20, pady=5)
+        
+        self.custom_label = ctk.CTkLabel(self.custom_frame, text="직접 입력 (IP:Port):")
+        self.custom_label.pack(side="left", padx=(5, 5))
+
+        self.custom_entry = ctk.CTkEntry(self.custom_frame, placeholder_text="예: 127.0.0.1:5565")
+        self.custom_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        # 하단 버튼 영역
+        self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.btn_frame.pack(fill="x", padx=20, pady=(10, 15))
+
+        self.add_selected_btn = ctk.CTkButton(
+            self.btn_frame,
+            text="➕ 선택 항목 탭 추가",
+            fg_color="#2980B9",
+            hover_color="#1F618D",
+            command=self.add_selected
+        )
+        self.add_selected_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        self.add_and_connect_btn = ctk.CTkButton(
+            self.btn_frame,
+            text="⚡ 전체 추가 & 자동 연결",
+            fg_color="green",
+            hover_color="#006400",
+            command=self.add_and_connect_all
+        )
+        self.add_and_connect_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
+
+        # 스레드로 디바이스 목록 검색
+        threading.Thread(target=self.fetch_devices, daemon=True).start()
+
+    def fetch_devices(self):
+        dummy = TeraboxClicker()
+        devices = dummy.get_connected_devices()
+        
+        def update_ui():
+            if not self.winfo_exists():
+                return
+            self.loading_label.destroy()
+            
+            existing_addrs = [f.clicker.device_address for f in self.parent_app.tab_frames.values()]
+            
+            if not devices:
+                no_dev = ctk.CTkLabel(self.scroll_frame, text="현재 자동 감지된 ADB 디바이스가 없습니다.\n아래 수동 입력을 이용하거나 에뮬레이터를 먼저 실행하세요.", text_color="orange")
+                no_dev.pack(pady=20)
+                return
+
+            for dev in devices:
+                var = ctk.BooleanVar(value=True)
+                self.checkbox_vars[dev] = var
+                
+                is_already = dev in existing_addrs
+                label_text = f"{dev} (이미 추가됨)" if is_already else dev
+                
+                chk = ctk.CTkCheckBox(self.scroll_frame, text=label_text, variable=var)
+                if is_already:
+                    var.set(False)
+                    chk.configure(state="disabled")
+                chk.pack(anchor="w", padx=10, pady=5)
+
+        self.parent_app.post_to_ui(update_ui)
+
+    def add_selected(self, auto_connect=False):
+        to_add = []
+        for dev, var in self.checkbox_vars.items():
+            if var.get():
+                to_add.append(dev)
+        
+        custom_val = self.custom_entry.get().strip()
+        if custom_val:
+            to_add.append(custom_val)
+            
+        if not to_add:
+            from tkinter import messagebox
+            messagebox.showinfo("알림", "추가할 디바이스를 하나 이상 선택하거나 주소를 입력하세요.")
+            return
+
+        added_frames = []
+        for addr in to_add:
+            frame = self.parent_app.add_instance_tab(device_address=addr)
+            if frame:
+                added_frames.append(frame)
+
+        if auto_connect:
+            for frame in added_frames:
+                frame.toggle_connection()
+
+        self.parent_app.save_app_config()
+        self.grab_release()
+        self.destroy()
+
+    def add_and_connect_all(self):
+        for dev, var in self.checkbox_vars.items():
+            var.set(True)
+        self.add_selected(auto_connect=True)
+
+
+class InstanceTabFrame(ctk.CTkFrame):
+    def __init__(self, master, app_owner, tab_name, device_address="127.0.0.1:5555"):
+        super().__init__(master, fg_color="transparent")
+        self.app_owner = app_owner
+        self.tab_name = tab_name
+        self.is_alert_open = False
+        self._alert_shown_for_current_timeout = False
+        self._destroyed = False
+        self._connection_generation = 0
+        self._loop_starting = False
+        self._log_line_count = 1
+
+        self.clicker = TeraboxClicker(
+            device_address=device_address,
+            on_timeout_callback=self.on_no_match_timeout,
+            logger=self.log_message,
+            on_match_callback=self.on_template_match,
+        )
+        self.clicker_thread = None
+        self.settings_window = None
+
+        # --- Top Header Bar inside Tab ---
+        self.header_frame = ctk.CTkFrame(self)
+        self.header_frame.pack(fill="x", padx=10, pady=(10, 5))
+
+        # Device Address Selector
+        self.device_addr_label = ctk.CTkLabel(self.header_frame, text="Device:", font=ctk.CTkFont(weight="bold"))
+        self.device_addr_label.pack(side="left", padx=(10, 5))
+
+        initial_devices = [self.clicker.device_address]
+        self.device_combo = ctk.CTkComboBox(
+            self.header_frame,
+            values=initial_devices,
+            width=160,
+            command=self.on_device_selected
+        )
+        self.device_combo.set(self.clicker.device_address)
+        self.device_combo.pack(side="left", padx=(0, 5))
+        self.device_combo.bind("<Return>", self.save_settings)
+        self.device_combo.bind("<FocusOut>", self.save_settings)
+
+        # Connect / Disconnect Button
+        self.connect_button = ctk.CTkButton(
+            self.header_frame,
+            text="Connect Device",
+            width=120,
+            command=self.toggle_connection
+        )
+        self.connect_button.pack(side="left", padx=5)
+
+        # Start / Stop Clicker Button
+        self.start_button = ctk.CTkButton(
+            self.header_frame,
+            text="Start Clicker",
+            width=120,
+            state="disabled",
+            fg_color="green",
+            hover_color="#006400",
+            command=self.toggle_clicker
+        )
+        self.start_button.pack(side="left", padx=5)
+
+        # Status Label
+        self.status_label = ctk.CTkLabel(
+            self.header_frame,
+            text="Status: Disconnected",
+            font=ctk.CTkFont(weight="bold"),
+            text_color="gray"
+        )
+        self.status_label.pack(side="left", padx=15)
+
+        # Right side buttons in tab header: Settings & Delete Tab
+        self.delete_tab_btn = ctk.CTkButton(
+            self.header_frame,
+            text="❌ Delete Tab",
+            width=90,
+            fg_color="#8B0000",
+            hover_color="#FF0000",
+            command=lambda: self.app_owner.remove_instance_tab(self.tab_name)
+        )
+        self.delete_tab_btn.pack(side="right", padx=(5, 10))
+
+        self.settings_button = ctk.CTkButton(
+            self.header_frame,
+            text="⚙️ Settings",
+            width=90,
+            fg_color="#4A4A4A",
+            hover_color="#5A5A5A",
+            command=self.open_settings_window
+        )
+        self.settings_button.pack(side="right", padx=5)
+
+        # --- Real-time Status & Timer Info Bar ---
+        self.timer_bar_frame = ctk.CTkFrame(self, fg_color=("#2B2B2B", "#1C1D1F"), corner_radius=6)
+        self.timer_bar_frame.pack(fill="x", padx=10, pady=(0, 5))
+        self.timer_bar_frame.grid_columnconfigure(0, weight=1)
+        self.timer_bar_frame.grid_columnconfigure(1, weight=1)
+        self.timer_bar_frame.grid_columnconfigure(2, weight=1)
+
+        # 1. 미매칭 대기 시간 카드
+        self.card_no_match = ctk.CTkFrame(self.timer_bar_frame, fg_color=("#333333", "#24252A"), corner_radius=5)
+        self.card_no_match.grid(row=0, column=0, padx=5, pady=4, sticky="ew")
+        self.no_match_timer_label = ctk.CTkLabel(
+            self.card_no_match,
+            text="⚡ 미매칭 대기: 정지됨",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="gray"
+        )
+        self.no_match_timer_label.pack(padx=10, pady=3)
+
+        # 2. 매칭없음 경고 시간 카드
+        self.card_timeout = ctk.CTkFrame(self.timer_bar_frame, fg_color=("#333333", "#24252A"), corner_radius=5)
+        self.card_timeout.grid(row=0, column=1, padx=5, pady=4, sticky="ew")
+        self.timeout_timer_label = ctk.CTkLabel(
+            self.card_timeout,
+            text="⚠️ 매칭없음 경고: 정지됨",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="gray"
+        )
+        self.timeout_timer_label.pack(padx=10, pady=3)
+
+        # 3. 최근 매칭 정보 카드
+        self.card_last_match = ctk.CTkFrame(self.timer_bar_frame, fg_color=("#333333", "#24252A"), corner_radius=5)
+        self.card_last_match.grid(row=0, column=2, padx=5, pady=4, sticky="ew")
+        self.last_match_info_label = ctk.CTkLabel(
+            self.card_last_match,
+            text="🎯 최근 매칭: 대기 중",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="gray"
+        )
+        self.last_match_info_label.pack(padx=10, pady=3)
+
+        # --- Main Body (Split into Log View and Templates View) ---
+        self.body_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.body_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.body_frame.grid_columnconfigure(0, weight=4)
+        self.body_frame.grid_columnconfigure(1, weight=6)
+        self.body_frame.grid_rowconfigure(0, weight=1)
+
+        # Left Column: Log Box Frame
+        self.log_frame = ctk.CTkFrame(self.body_frame)
+        self.log_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=5)
+        self.log_frame.grid_rowconfigure(1, weight=1)
+        self.log_frame.grid_columnconfigure(0, weight=1)
+
+        self.log_header_label = ctk.CTkLabel(self.log_frame, text="📜 Activity Log", font=ctk.CTkFont(weight="bold"))
+        self.log_header_label.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
+
+        self.log_textbox = ctk.CTkTextbox(self.log_frame, width=350)
+        self.log_textbox.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
+        self.log_textbox.insert("0.0", f"Initialized Tab [{self.tab_name}] for ADB device [{self.clicker.device_address}]\n")
+        self.log_textbox.configure(state="disabled")
+
+        # Right Column: Active & Fallback Templates Frame
+        self.templates_main_frame = ctk.CTkFrame(self.body_frame)
+        self.templates_main_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=5)
+        self.templates_main_frame.grid_rowconfigure(0, weight=1)
+        self.templates_main_frame.grid_columnconfigure(0, weight=1)
+
+        # Tabview for Primary and Fallback Templates
+        self.template_tabview = ctk.CTkTabview(self.templates_main_frame)
+        self.template_tabview.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        
+        self.tab_primary = self.template_tabview.add("📋 기본 템플릿")
+        self.tab_fallback = self.template_tabview.add("⚡ 미매칭 템플릿")
+
+        # --- Setup Primary Tab ---
+        self.primary_header_frame = ctk.CTkFrame(self.tab_primary, fg_color="transparent")
+        self.primary_header_frame.pack(fill="x", padx=5, pady=(5, 5))
+
+        self.primary_header_label = ctk.CTkLabel(self.primary_header_frame, text="Primary Templates", font=ctk.CTkFont(weight="bold"))
+        self.primary_header_label.pack(side="left")
+
+        self.reset_counts_button = ctk.CTkButton(
+            self.primary_header_frame,
+            text="Reset Counts",
+            width=100,
+            height=26,
+            fg_color="#D9534F",
+            hover_color="#C9302C",
+            command=self.reset_counts_event
+        )
+        self.reset_counts_button.pack(side="right", padx=(5, 0))
+
+        self.crop_button = ctk.CTkButton(
+            self.primary_header_frame,
+            text="+ Create Template",
+            width=125,
+            height=26,
+            command=lambda: self.start_cropping(is_fallback=False),
+            state="disabled"
+        )
+        self.crop_button.pack(side="right", padx=(0, 5))
+
+        self.templates_frame = ctk.CTkScrollableFrame(self.tab_primary)
+        self.templates_frame.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+
+        # --- Setup Fallback Tab ---
+        self.fallback_header_frame = ctk.CTkFrame(self.tab_fallback, fg_color="transparent")
+        self.fallback_header_frame.pack(fill="x", padx=5, pady=(5, 5))
+
+        self.fallback_header_label = ctk.CTkLabel(self.fallback_header_frame, text="No-Match Fallback Templates", font=ctk.CTkFont(weight="bold"))
+        self.fallback_header_label.pack(side="left")
+
+        self.fallback_timer_sublabel = ctk.CTkLabel(
+            self.fallback_header_frame,
+            text="⚡ 대기: --",
+            font=ctk.CTkFont(size=12),
+            text_color="#5DADE2"
+        )
+        self.fallback_timer_sublabel.pack(side="left", padx=(10, 0))
+
+        self.reset_fb_counts_button = ctk.CTkButton(
+            self.fallback_header_frame,
+            text="Reset Counts",
+            width=100,
+            height=26,
+            fg_color="#D9534F",
+            hover_color="#C9302C",
+            command=self.reset_fallback_counts_event
+        )
+        self.reset_fb_counts_button.pack(side="right", padx=(5, 0))
+
+        self.crop_fb_button = ctk.CTkButton(
+            self.fallback_header_frame,
+            text="+ Create Fallback",
+            width=125,
+            height=26,
+            fg_color="#3498DB",
+            hover_color="#2980B9",
+            command=lambda: self.start_cropping(is_fallback=True),
+            state="disabled"
+        )
+        self.crop_fb_button.pack(side="right", padx=(0, 5))
+
+        self.fallback_templates_frame = ctk.CTkScrollableFrame(self.tab_fallback)
+        self.fallback_templates_frame.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+
+        # --- Fallback Final Action Control (Bottom Panel) ---
+        self.fallback_final_frame = ctk.CTkFrame(self.tab_fallback, fg_color=("#2B2B2B", "#1E1E22"), corner_radius=6)
+        self.fallback_final_frame.pack(fill="x", padx=5, pady=(0, 5))
+
+        self.fb_final_title = ctk.CTkLabel(
+            self.fallback_final_frame,
+            text="📌 모든 템플릿 불일치 시 최종 동작:",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.fb_final_title.pack(side="left", padx=(10, 8), pady=6)
+
+        curr_fb_action = getattr(self.clicker, 'fallback_final_action', 'none')
+        curr_fb_label = NO_MATCH_ACTION_MAP.get(curr_fb_action, "사용 안 함 (Disabled)")
+        final_action_options = [
+            NO_MATCH_ACTION_MAP["none"],
+            NO_MATCH_ACTION_MAP["custom_click"],
+            NO_MATCH_ACTION_MAP["custom_double_click"],
+            NO_MATCH_ACTION_MAP["back"],
+            NO_MATCH_ACTION_MAP["random_click"],
+        ]
+        self.fb_final_combo = ctk.CTkOptionMenu(
+            self.fallback_final_frame,
+            values=final_action_options,
+            width=180,
+            command=self.on_fallback_final_action_changed
+        )
+        self.fb_final_combo.set(curr_fb_label)
+        self.fb_final_combo.pack(side="left", padx=(0, 6), pady=6)
+
+        # Coordinate inputs
+        self.fb_final_coord_frame = ctk.CTkFrame(self.fallback_final_frame, fg_color="transparent")
+        self.fb_final_coord_frame.pack(side="left", padx=(0, 5), pady=6)
+
+        coords = getattr(self.clicker, 'fallback_final_coords', [500, 500])
+        self.fb_final_x_label = ctk.CTkLabel(self.fb_final_coord_frame, text="X:")
+        self.fb_final_x_label.pack(side="left", padx=(0, 2))
+        self.fb_final_x_entry = ctk.CTkEntry(self.fb_final_coord_frame, width=50)
+        self.fb_final_x_entry.insert(0, str(coords[0]))
+        self.fb_final_x_entry.pack(side="left", padx=(0, 6))
+        self.fb_final_x_entry.bind("<KeyRelease>", self.save_fallback_final_settings)
+        self.fb_final_x_entry.bind("<FocusOut>", self.save_fallback_final_settings)
+
+        self.fb_final_y_label = ctk.CTkLabel(self.fb_final_coord_frame, text="Y:")
+        self.fb_final_y_label.pack(side="left", padx=(0, 2))
+        self.fb_final_y_entry = ctk.CTkEntry(self.fb_final_coord_frame, width=50)
+        self.fb_final_y_entry.insert(0, str(coords[1]))
+        self.fb_final_y_entry.pack(side="left", padx=(0, 6))
+        self.fb_final_y_entry.bind("<KeyRelease>", self.save_fallback_final_settings)
+        self.fb_final_y_entry.bind("<FocusOut>", self.save_fallback_final_settings)
+
+        self.fb_final_pick_btn = ctk.CTkButton(
+            self.fb_final_coord_frame,
+            text="🎯 좌표 선택",
+            width=90,
+            command=self.pick_fallback_final_coords
+        )
+        self.fb_final_pick_btn.pack(side="left", padx=2)
+
+        self.update_fb_final_coord_visibility(curr_fb_action)
+
+        # Test Run Button
+        self.fb_final_test_btn = ctk.CTkButton(
+            self.fallback_final_frame,
+            text="⚡ 즉시 실행",
+            width=90,
+            fg_color="#D35400",
+            hover_color="#A04000",
+            command=self.test_fallback_final_action
+        )
+        self.fb_final_test_btn.pack(side="right", padx=(5, 10), pady=6)
+
+        self.refresh_templates()
+
+    def update_device_combo_values(self, device_list):
+        if not self._destroyed:
+            self.device_combo.configure(values=device_list)
+
+    def _set_disconnected_ui(self):
+        self.status_label.configure(text="Status: Disconnected", text_color="gray")
+        self.start_button.configure(
+            state="disabled", text="Start Clicker",
+            fg_color="green", hover_color="#006400"
+        )
+        self.crop_button.configure(state="disabled")
+        self.crop_fb_button.configure(state="disabled")
+        self.connect_button.configure(state="normal", text="Connect Device")
+
+    def on_device_selected(self, choice):
+        if choice:
+            self.save_settings()
+
+    def save_settings(self, event=None):
+        new_address = self.device_combo.get().strip()
+        if not new_address:
+            self.device_combo.set(self.clicker.device_address)
+            return
+
+        if new_address != self.clicker.device_address:
+            self._connection_generation += 1
+            self.clicker.disconnect()
+            self.clicker.device_address = new_address
+            self.clicker.load_config()
+            self._set_disconnected_ui()
+            self.refresh_templates()
+
+        self.app_owner.save_app_config()
+
+    def log_message(self, message):
+        if self._destroyed:
+            return
+
+        def update_log():
+            if self._destroyed or not self.winfo_exists():
+                return
+            self.log_textbox.configure(state="normal")
+            timestamp = time.strftime("[%H:%M:%S] ")
+            self.log_textbox.insert("end", f"{timestamp}{message}\n")
+            self._log_line_count += 1
+            if self._log_line_count > 1000:
+                self.log_textbox.delete("1.0", "201.0")
+                self._log_line_count -= 200
+            self.log_textbox.see("end")
+            self.log_textbox.configure(state="disabled")
+            if "매칭 성공:" in message:
+                self.clear_warning_ui()
+
+        self.app_owner.post_to_ui(update_log)
+
+    def on_template_match(self, filename, count, is_fallback):
+        self.clear_warning_ui()
+        self.app_owner.post_to_ui(
+            lambda: self.app_owner.update_template_count_for_all(
+                filename, count, is_fallback
+            )
+        )
+
+    def clear_warning_ui(self):
+        self._alert_shown_for_current_timeout = False
+        if hasattr(self, "normal_header_fg"):
+            self.header_frame.configure(fg_color=self.normal_header_fg)
+        if self.clicker.is_running and self.clicker.device:
+            self.status_label.configure(
+                text=f"Status: Running ({self.clicker.device_address})",
+                text_color="green",
+            )
+
+    def update_timer_display(self):
+        if self._destroyed or not self.winfo_exists():
+            return
+
+        status = self.clicker.get_timers_status()
+        is_running = status["is_running"]
+        action = status["no_match_action"]
+        interval = status["no_match_interval"]
+        no_match_rem = status["no_match_remaining"]
+        no_match_elp = status["no_match_elapsed"]
+        timeout = status["timeout"]
+        timeout_rem = status["timeout_remaining"]
+        timeout_elp = status["timeout_elapsed"]
+        last_template = status["last_matched_template"]
+        last_is_fb = status["last_matched_is_fallback"]
+        last_elp = status["last_match_elapsed"]
+
+        action_name = NO_MATCH_ACTION_MAP.get(action, action)
+        short_action = action_name.split("(")[0].strip()
+
+        # 1. 미매칭 대기 시간
+        if not is_running:
+            self.no_match_timer_label.configure(
+                text=f"⚡ 미매칭 대기: 정지됨 (설정: {interval:.0f}s)" if interval > 0 else "⚡ 미매칭 대기: 정지됨",
+                text_color="gray"
+            )
+            if hasattr(self, "fallback_timer_sublabel") and self.fallback_timer_sublabel.winfo_exists():
+                self.fallback_timer_sublabel.configure(
+                    text=f"[설정: {interval:.0f}s]",
+                    text_color="gray"
+                )
+        elif action == "none" or interval <= 0:
+            self.no_match_timer_label.configure(
+                text="⚡ 미매칭 동작: 사용 안 함 (OFF)",
+                text_color="gray"
+            )
+            if hasattr(self, "fallback_timer_sublabel") and self.fallback_timer_sublabel.winfo_exists():
+                self.fallback_timer_sublabel.configure(
+                    text="[미매칭 동작 미사용]",
+                    text_color="gray"
+                )
+        else:
+            if no_match_rem <= 0.05:
+                status_text = f"⚡ 미매칭 동작: 실행 대기 중... ({short_action})"
+                color = "#2ECC71"
+            else:
+                status_text = f"⚡ 미매칭 대기: {no_match_rem:.1f}초 남음 ({no_match_elp:.1f}/{interval:.0f}s)"
+                color = "#5DADE2"
+
+            self.no_match_timer_label.configure(
+                text=status_text,
+                text_color=color
+            )
+            if hasattr(self, "fallback_timer_sublabel") and self.fallback_timer_sublabel.winfo_exists():
+                self.fallback_timer_sublabel.configure(
+                    text=f"⚡ 검사 대기: {no_match_rem:.1f}s / {interval:.0f}s",
+                    text_color=color
+                )
+
+        # 2. 매칭없음 경고 시간
+        if not is_running:
+            self.timeout_timer_label.configure(
+                text=f"⚠️ 매칭없음 경고: 정지됨 (설정: {timeout:.0f}s)" if timeout > 0 else "⚠️ 매칭없음 경고: 비활성화",
+                text_color="gray"
+            )
+        elif timeout <= 0:
+            self.timeout_timer_label.configure(
+                text="⚠️ 매칭없음 경고: 비활성화 (OFF)",
+                text_color="gray"
+            )
+        else:
+            if timeout_elp >= timeout:
+                self.timeout_timer_label.configure(
+                    text=f"⚠️ 매칭없음 경고: 경고 발생 중! ({timeout_elp:.1f}s 경과)",
+                    text_color="#FF4D4D"
+                )
+            else:
+                color = "#F39C12" if timeout_rem < 15 else "#D5D8DC"
+                self.timeout_timer_label.configure(
+                    text=f"⚠️ 매칭없음 경고: {timeout_rem:.1f}초 남음 ({timeout_elp:.1f}/{timeout:.0f}s)",
+                    text_color=color
+                )
+
+        # 3. 최근 매칭 정보
+        if not is_running:
+            self.last_match_info_label.configure(
+                text="🎯 최근 매칭: 대기 중",
+                text_color="gray"
+            )
+        elif last_template and last_elp is not None:
+            tag = " [복구]" if last_is_fb else ""
+            self.last_match_info_label.configure(
+                text=f"🎯 최근 매칭: {last_template}{tag} ({last_elp:.0f}초 전)",
+                text_color="#2ECC71" if last_elp < 3 else "#BDC3C7"
+            )
+        else:
+            self.last_match_info_label.configure(
+                text="🎯 최근 매칭: 아직 없음",
+                text_color="#A6ACAF"
+            )
+
+    def on_no_match_timeout(self, timeout_sec):
+        def show_warning_ui():
+            if self._destroyed or not self.winfo_exists():
+                return
+            if not hasattr(self, "normal_header_fg"):
+                self.normal_header_fg = self.header_frame.cget("fg_color")
+            self.header_frame.configure(fg_color="#5A1A1A")
+            self.status_label.configure(
+                text=f"⚠️ 경고: {timeout_sec}초간 매칭 미발생! ({self.clicker.device_address})",
+                text_color="#FF4D4D",
+            )
+            try:
+                self.app_owner.tabview.set(self.tab_name)
+            except Exception:
+                pass
+
+            if not self._alert_shown_for_current_timeout and not self.is_alert_open:
+                self._alert_shown_for_current_timeout = True
+                self.is_alert_open = True
+                from tkinter import messagebox
+                try:
+                    messagebox.showwarning(
+                        f"⚠️ 타임아웃 경고 - [{self.tab_name}]",
+                        f"⚠️ 경고 발생 탭: {self.tab_name}\n"
+                        f"📱 디바이스 주소: {self.clicker.device_address}\n\n"
+                        f"⚠️ 설정된 {timeout_sec}초 동안 어떠한 템플릿도 매칭되지 않았습니다!\n"
+                        "해당 에뮬레이터 화면 및 상태를 확인해 주세요.",
+                    )
+                finally:
+                    self.is_alert_open = False
+
+        self.app_owner.post_to_ui(show_warning_ui)
+
+    def toggle_connection(self):
+        self.save_settings()
+        if self.clicker.device is not None:
+            self._connection_generation += 1
+            self.clicker.disconnect()
+            self._set_disconnected_ui()
+            return
+
+        self._connection_generation += 1
+        generation = self._connection_generation
+        self.connect_button.configure(state="disabled", text="Connecting...")
+
+        def connect_task():
+            success = self.clicker.start_adb_server()
+
+            def apply_result():
+                if self._destroyed or generation != self._connection_generation:
+                    if success:
+                        self.clicker.disconnect()
+                    return
+                if success:
+                    self.status_label.configure(
+                        text=f"Status: Connected to {self.clicker.device_address}",
+                        text_color="green",
+                    )
+                    self.start_button.configure(state="normal")
+                    self.crop_button.configure(state="normal")
+                    self.crop_fb_button.configure(state="normal")
+                    self.connect_button.configure(state="normal", text="Disconnect")
+                else:
+                    self.status_label.configure(
+                        text="Status: Connection Failed", text_color="red"
+                    )
+                    self.connect_button.configure(
+                        state="normal", text="Connect Device"
+                    )
+
+            self.app_owner.post_to_ui(apply_result)
+
+        threading.Thread(target=connect_task, daemon=True).start()
+
+    def toggle_clicker(self):
+        self.save_settings()
+        if self.clicker.is_running:
+            self.stop_clicker_loop()
+        elif not self._loop_starting:
+            self.start_clicker_loop()
+
+    def start_clicker_loop(self):
+        if self.clicker.device is None:
+            self.log_message("연결된 디바이스가 없습니다. 연결 후 시작해 주세요.")
+            return
+        if self.clicker.is_running or self._loop_starting:
+            return
+
+        self._loop_starting = True
+        self._alert_shown_for_current_timeout = False
+        self.start_button.configure(
+            text="Stop Clicker", fg_color="red", hover_color="#8B0000"
+        )
+        self.status_label.configure(
+            text=f"Status: Running ({self.clicker.device_address})",
+            text_color="green",
+        )
+
+        def run_loop():
+            try:
+                self.clicker.start_loop()
+            finally:
+                def finish_loop():
+                    self._loop_starting = False
+                    self._alert_shown_for_current_timeout = False
+                    if self._destroyed or not self.winfo_exists():
+                        return
+                    self.start_button.configure(
+                        text="Start Clicker",
+                        fg_color="green",
+                        hover_color="#006400",
+                    )
+                    self.status_label.configure(
+                        text=(
+                            f"Status: Connected to {self.clicker.device_address}"
+                            if self.clicker.device
+                            else "Status: Disconnected"
+                        ),
+                        text_color="green" if self.clicker.device else "gray",
+                    )
+
+                self.app_owner.post_to_ui(finish_loop)
+
+        self.clicker_thread = threading.Thread(target=run_loop, daemon=True)
+        self.clicker_thread.start()
+
+    def stop_clicker_loop(self):
+        self._alert_shown_for_current_timeout = False
+        if self.clicker.is_running or self._loop_starting:
+            self.clicker.stop_loop()
+            self.start_button.configure(text="Stopping...")
+
+    def shutdown(self):
+        self._destroyed = True
+        self._connection_generation += 1
+        self.clicker.shutdown()
+
+    def refresh_templates(self):
+        if self._destroyed or not self.winfo_exists():
+            return
+
+        TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
+        self.clicker.load_config()
+        self.template_row_widgets = {}
+        self.fallback_template_row_widgets = {}
+        self.template_count_labels = {}
+        self.fallback_template_count_labels = {}
+
+        # 1. 기본 템플릿 목록 렌더링
+        for widget in self.templates_frame.winfo_children():
+            widget.destroy()
+
+        for i, filename in enumerate(self.clicker.template_order):
+            self.create_template_row(self.templates_frame, filename, i, is_fallback=False)
+
+        # 2. 미매칭 복구 템플릿 목록 렌더링
+        for widget in self.fallback_templates_frame.winfo_children():
+            widget.destroy()
+
+        for i, filename in enumerate(self.clicker.fallback_template_order):
+            self.create_template_row(self.fallback_templates_frame, filename, i, is_fallback=True)
+
+        if hasattr(self, 'fb_final_combo') and self.fb_final_combo.winfo_exists():
+            curr_fb_action = getattr(self.clicker, 'fallback_final_action', 'none')
+            curr_fb_label = NO_MATCH_ACTION_MAP.get(curr_fb_action, "사용 안 함 (Disabled)")
+            self.fb_final_combo.set(curr_fb_label)
+            coords = getattr(self.clicker, 'fallback_final_coords', [500, 500])
+            self.fb_final_x_entry.delete(0, "end")
+            self.fb_final_x_entry.insert(0, str(coords[0]))
+            self.fb_final_y_entry.delete(0, "end")
+            self.fb_final_y_entry.insert(0, str(coords[1]))
+            self.update_fb_final_coord_visibility(curr_fb_action)
+
+    def create_template_row(self, parent_frame, filename, index, is_fallback=False):
+        row_frame = ctk.CTkFrame(parent_frame, fg_color="transparent")
+        row_frame.pack(fill="x", padx=5, pady=2)
+
+        # 1. 우측 고정 버튼 영역
+        btn_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
+        btn_frame.pack(side="right", padx=(5, 0))
+
+        del_cmd = (lambda f=filename: self.delete_fallback_template_event(f)) if is_fallback else (lambda f=filename: self.delete_template_event(f))
+        del_btn = ctk.CTkButton(btn_frame, text="X", width=28, height=25, 
+                              fg_color="#8B0000", hover_color="#FF0000",
+                              command=del_cmd)
+        del_btn.pack(side="right", padx=(4, 0))
+
+        action_dict = self.clicker.fallback_template_actions if is_fallback else self.clicker.template_actions
+        action = action_dict.get(filename, "click")
+        if action == "back":
+            action_text = "Back (뒤로가기)"
+            action_fg = "#E67E22"
+            action_hover = "#D35400"
+        elif action in ("double_click", "click_click", "double"):
+            action_text = "Double (클릭클릭)"
+            action_fg = "#2980B9"
+            action_hover = "#1F618D"
+        else:
+            action_text = "Click (클릭)"
+            action_fg = "#27AE60"
+            action_hover = "#1E8449"
+        
+        toggle_cmd = (lambda f=filename: self.toggle_fallback_action_event(f)) if is_fallback else (lambda f=filename: self.toggle_action_event(f))
+        action_btn = ctk.CTkButton(btn_frame, text=action_text, width=115, height=25,
+                                   fg_color=action_fg, hover_color=action_hover,
+                                   command=toggle_cmd)
+        action_btn.pack(side="right", padx=(4, 0))
+
+        delays_dict = self.clicker.fallback_template_delays if is_fallback else self.clicker.template_delays
+        delay = delays_dict.get(filename, 0.0)
+        delay_text = f"⏱️ {delay:g}s" if delay > 0 else "⏱️ 0s"
+        delay_fg = "#6C5B28" if delay > 0 else "#333333"
+        delay_hover = "#8D7736" if delay > 0 else "#444444"
+        delay_cmd = (lambda f=filename: self.set_fallback_template_delay_event(f)) if is_fallback else (lambda f=filename: self.set_template_delay_event(f))
+        delay_btn = ctk.CTkButton(btn_frame, text=delay_text, width=54, height=25,
+                                  fg_color=delay_fg, hover_color=delay_hover,
+                                  command=delay_cmd)
+        delay_btn.pack(side="right", padx=0)
+
+        counts_dict = self.clicker.fallback_template_counts if is_fallback else self.clicker.template_counts
+        count = counts_dict.get(filename, 0)
+        count_label = ctk.CTkLabel(row_frame, text=f"Clicks: {count}", width=75, text_color="gray", anchor="e")
+        count_label.pack(side="right", padx=(5, 10))
+
+        # 2. 좌측 고정 컨트롤 영역
+        drag_handle = ctk.CTkLabel(row_frame, text="☰", width=25, cursor="fleur", font=ctk.CTkFont(size=14, weight="bold"), text_color="gray")
+        drag_handle.pack(side="left", padx=(5, 0))
+
+        priority_label = ctk.CTkLabel(row_frame, text=f"{index+1}.", width=30, anchor="w")
+        priority_label.pack(side="left", padx=(2, 5))
+
+        # 3. 중앙 가변 텍스트 라벨
+        offset_dict = self.clicker.fallback_template_offsets if is_fallback else self.clicker.template_offsets
+        offset_info = ""
+        if filename in offset_dict:
+            off_x, off_y = offset_dict[filename]
+            offset_info = f"  ({off_x:+d},{off_y:+d})"
+        
+        label = ctk.CTkLabel(row_frame, text=f"{filename}{offset_info}", anchor="w")
+        label.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        target_dir = self.clicker.fallback_template_dir if is_fallback else self.clicker.template_dir
+        template_file_path = os.path.join(target_dir, filename)
+
+        def on_enter(e):
+            tooltip = TemplatePreviewTooltip.get_instance(self.winfo_toplevel())
+            tooltip.schedule_show(label, template_file_path, filename, offset_info.strip())
+
+        def on_leave(e):
+            tooltip = TemplatePreviewTooltip.get_instance(self.winfo_toplevel())
+            tooltip.cancel()
+
+        for widget in (row_frame, drag_handle, priority_label, label, count_label):
+            widget.bind("<ButtonPress-1>", lambda e, f=filename, fb=is_fallback: self.on_drag_start(e, f, fb))
+            widget.bind("<B1-Motion>", self.on_drag_motion)
+            widget.bind("<ButtonRelease-1>", self.on_drag_end)
+            widget.bind("<Double-Button-1>", lambda e, f=filename, fb=is_fallback: self.on_template_double_click(f, fb))
+            widget.bind("<Enter>", on_enter, add="+")
+            widget.bind("<Leave>", on_leave, add="+")
+
+        if is_fallback:
+            self.fallback_template_row_widgets[filename] = (row_frame, priority_label, drag_handle)
+            self.fallback_template_count_labels[filename] = count_label
+        else:
+            self.template_row_widgets[filename] = (row_frame, priority_label, drag_handle)
+            self.template_count_labels[filename] = count_label
+
+    def on_template_double_click(self, filename, is_fallback=False):
+        TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
+        row_dict = self.fallback_template_row_widgets if is_fallback else self.template_row_widgets
+        if filename in row_dict:
+            frame, _, _ = row_dict[filename]
+            frame.configure(fg_color="#2E7D32")
+            self.after(250, lambda: frame.configure(fg_color="transparent") if (not self._destroyed and frame.winfo_exists()) else None)
+
+        if self.clicker.device is None:
+            self.log_message(f"⚠️ 디바이스가 연결되어 있지 않아 '{filename}' 동작을 실행할 수 없습니다.")
+            return
+
+        def task():
+            self.clicker.execute_template(filename, is_fallback=is_fallback)
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def move_template(self, filename, direction, is_fallback=False):
+        TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
+        order = self.clicker.fallback_template_order if is_fallback else self.clicker.template_order
+        if filename not in order:
+            return
+        idx = order.index(filename)
+        new_idx = idx + direction
+        if 0 <= new_idx < len(order):
+            item = order.pop(idx)
+            order.insert(new_idx, item)
+            self.clicker.save_config()
+            self.app_owner.refresh_all_tabs_templates()
+
+    def on_drag_start(self, event, filename, is_fallback=False):
+        TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
+        self.drag_source_filename = filename
+        self.drag_target_filename = filename
+        self.drag_is_fallback = is_fallback
+        row_dict = self.fallback_template_row_widgets if is_fallback else self.template_row_widgets
+        if filename in row_dict:
+            frame, _, _ = row_dict[filename]
+            frame.configure(fg_color="#1F6FE5")
+
+    def on_drag_motion(self, event):
+        if not getattr(self, 'drag_source_filename', None):
+            return
+        
+        y = event.y_root
+        is_fallback = getattr(self, 'drag_is_fallback', False)
+        order = self.clicker.fallback_template_order if is_fallback else self.clicker.template_order
+        row_dict = self.fallback_template_row_widgets if is_fallback else self.template_row_widgets
+        
+        if self.drag_source_filename not in order:
+            return
+            
+        target = None
+        for f in order:
+            if f not in row_dict:
+                continue
+            frame, _, _ = row_dict[f]
+            try:
+                if not frame.winfo_exists():
+                    continue
+                child_y = frame.winfo_rooty()
+                child_h = frame.winfo_height()
+            except Exception:
+                continue
+            if child_h <= 0:
+                child_h = 35
+                
+            if child_y <= y <= child_y + child_h:
+                target = f
+                break
+
+        prev_target = getattr(self, 'drag_target_filename', None)
+        if target and target != prev_target:
+            if prev_target and prev_target != self.drag_source_filename and prev_target in row_dict:
+                try:
+                    row_dict[prev_target][0].configure(fg_color="transparent")
+                except Exception:
+                    pass
+            self.drag_target_filename = target
+            if target != self.drag_source_filename and target in row_dict:
+                try:
+                    row_dict[target][0].configure(fg_color="#3A3A3A")
+                except Exception:
+                    pass
+
+    def on_drag_end(self, event):
+        src = getattr(self, 'drag_source_filename', None)
+        tgt = getattr(self, 'drag_target_filename', None)
+        is_fallback = getattr(self, 'drag_is_fallback', False)
+        row_dict = self.fallback_template_row_widgets if is_fallback else self.template_row_widgets
+        
+        self.drag_source_filename = None
+        self.drag_target_filename = None
+        self.drag_is_fallback = False
+
+        if src and src in row_dict:
+            row_dict[src][0].configure(fg_color="transparent")
+        if tgt and tgt in row_dict:
+            row_dict[tgt][0].configure(fg_color="transparent")
+
+        order = self.clicker.fallback_template_order if is_fallback else self.clicker.template_order
+        if src and tgt and src in order and tgt in order and src != tgt:
+            src_idx = order.index(src)
+            tgt_idx = order.index(tgt)
+            item = order.pop(src_idx)
+            order.insert(tgt_idx, item)
+            self.clicker.save_config()
+
+        self.app_owner.refresh_all_tabs_templates()
+
+    def toggle_action_event(self, filename):
+        self.clicker.toggle_action(filename)
+        self.app_owner.refresh_all_tabs_templates()
+
+    def toggle_fallback_action_event(self, filename):
+        self.clicker.toggle_fallback_action(filename)
+        self.app_owner.refresh_all_tabs_templates()
+
+    def set_template_delay_event(self, filename):
+        current = self.clicker.template_delays.get(filename, 0.0)
+        dialog = ctk.CTkInputDialog(
+            text=f"'{filename}' 인식 후 작업 실행 전 지연 시간(초)을 입력하세요:\n(현재: {current:g}초 / 0: 즉시 실행, 예: 0.5, 1, 2.5)",
+            title=f"지연 시간 설정 - {filename}",
+        )
+        val = dialog.get_input()
+        if val is None:
+            return
+        val = val.strip()
+        if not val:
+            return
+        try:
+            delay_sec = float(val)
+            if delay_sec < 0:
+                raise ValueError
+            self.clicker.set_template_delay(filename, delay_sec)
+            self.log_message(f"⏱️ [{filename}] 지연 시간이 {delay_sec:g}초로 설정되었습니다.")
+            self.app_owner.refresh_all_tabs_templates()
+        except ValueError:
+            from tkinter import messagebox
+            messagebox.showerror("입력 오류", "0 이상의 숫자를 입력해주세요. (예: 0, 0.5, 1.5)")
+
+    def set_fallback_template_delay_event(self, filename):
+        current = self.clicker.fallback_template_delays.get(filename, 0.0)
+        dialog = ctk.CTkInputDialog(
+            text=f"'{filename}' [미매칭 복구] 인식 후 작업 실행 전 지연 시간(초)을 입력하세요:\n(현재: {current:g}초 / 0: 즉시 실행, 예: 0.5, 1, 2.5)",
+            title=f"지연 시간 설정 - {filename}",
+        )
+        val = dialog.get_input()
+        if val is None:
+            return
+        val = val.strip()
+        if not val:
+            return
+        try:
+            delay_sec = float(val)
+            if delay_sec < 0:
+                raise ValueError
+            self.clicker.set_fallback_template_delay(filename, delay_sec)
+            self.log_message(f"⏱️ [미매칭 복구: {filename}] 지연 시간이 {delay_sec:g}초로 설정되었습니다.")
+            self.app_owner.refresh_all_tabs_templates()
+        except ValueError:
+            from tkinter import messagebox
+            messagebox.showerror("입력 오류", "0 이상의 숫자를 입력해주세요. (예: 0, 0.5, 1.5)")
+
+    def reset_counts_event(self):
+        self.clicker.reset_counts()
+        self.app_owner.refresh_all_tabs_templates()
+
+    def reset_fallback_counts_event(self):
+        self.clicker.reset_fallback_counts()
+        self.app_owner.refresh_all_tabs_templates()
+
+    def delete_template_event(self, filename):
+        TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
+        if self.clicker.delete_template(filename):
+            self.app_owner.refresh_all_tabs_templates()
+
+    def delete_fallback_template_event(self, filename):
+        TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
+        if self.clicker.delete_fallback_template(filename):
+            self.app_owner.refresh_all_tabs_templates()
+
+    def on_fallback_final_action_changed(self, choice):
+        action_key = REVERSE_NO_MATCH_ACTION_MAP.get(choice, "none")
+        self.update_fb_final_coord_visibility(action_key)
+        self.save_fallback_final_settings()
+
+    def update_fb_final_coord_visibility(self, action_key):
+        if action_key in ("custom_click", "custom_double_click"):
+            self.fb_final_coord_frame.pack(side="left", padx=(0, 5), pady=6)
+        else:
+            self.fb_final_coord_frame.pack_forget()
+
+    def save_fallback_final_settings(self, event=None):
+        action_key = REVERSE_NO_MATCH_ACTION_MAP.get(self.fb_final_combo.get(), "none")
+        self.clicker.fallback_final_action = action_key
+        try:
+            x = int(self.fb_final_x_entry.get().strip())
+            y = int(self.fb_final_y_entry.get().strip())
+            self.clicker.fallback_final_coords = [x, y]
+        except ValueError:
+            pass
+        self.clicker.save_config(include_templates=False)
+        self.app_owner.save_app_config()
+
+    def pick_fallback_final_coords(self):
+        try:
+            initial_x = int(self.fb_final_x_entry.get().strip())
+            initial_y = int(self.fb_final_y_entry.get().strip())
+        except ValueError:
+            initial_x = initial_y = None
+
+        app = self.app_owner
+        if not app.opencv_lock.acquire(blocking=False):
+            self.log_message("다른 화면 선택 창이 이미 열려 있습니다.")
+            return
+
+        self.fb_final_pick_btn.configure(state="disabled")
+
+        def finish_picker():
+            app.opencv_lock.release()
+            def enable_button():
+                if not self._destroyed and self.winfo_exists():
+                    self.fb_final_pick_btn.configure(state="normal")
+            app.post_to_ui(enable_button)
+
+        def pick_task():
+            window_name = None
+            try:
+                screen = self.clicker.capture_screen(grayscale=False)
+                if screen is None:
+                    self.log_message("좌표 선택용 화면 캡처에 실패했습니다.")
+                    return
+
+                height, width = screen.shape[:2]
+                selected_pt = [
+                    width // 2 if initial_x is None else max(0, min(width - 1, initial_x)),
+                    height // 2 if initial_y is None else max(0, min(height - 1, initial_y)),
+                ]
+                window_name = "[Pick Fallback Final Coordinates] Click point -> Enter to confirm"
+                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(window_name, width // 2, (height + 60) // 2)
+
+                def update_preview():
+                    display = screen.copy()
+                    x, y = selected_pt
+                    cv2.circle(display, (x, y), 8, (0, 0, 255), 2)
+                    cv2.drawMarker(display, (x, y), (0, 0, 255), cv2.MARKER_CROSS, 22, 2)
+                    banner = np.full((60, width, 3), 30, dtype=np.uint8)
+                    cv2.putText(banner, f"Selected: ({x}, {y})", (15, 25),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+                    cv2.putText(banner,
+                                "Click screen -> Enter/Space: Confirm, 'c'/ESC: Cancel",
+                                (15, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                (220, 220, 220), 1, cv2.LINE_AA)
+                    cv2.imshow(window_name, np.vstack([display, banner]))
+
+                def on_mouse(event, mouse_x, mouse_y, flags, param):
+                    if event == cv2.EVENT_LBUTTONDOWN and 0 <= mouse_y < height and 0 <= mouse_x < width:
+                        selected_pt[:] = [mouse_x, mouse_y]
+                        update_preview()
+
+                cv2.setMouseCallback(window_name, on_mouse)
+                update_preview()
+                cancelled = False
+                while True:
+                    key = cv2.waitKey(30) & 0xFF
+                    if key in (13, 32):
+                        break
+                    if key in (ord("c"), ord("C"), 27):
+                        cancelled = True
+                        break
+                    try:
+                        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                            cancelled = True
+                            break
+                    except cv2.error:
+                        cancelled = True
+                        break
+
+                if not cancelled:
+                    def update_entries():
+                        if self._destroyed or not self.winfo_exists():
+                            return
+                        self.fb_final_x_entry.delete(0, "end")
+                        self.fb_final_x_entry.insert(0, str(selected_pt[0]))
+                        self.fb_final_y_entry.delete(0, "end")
+                        self.fb_final_y_entry.insert(0, str(selected_pt[1]))
+                        self.save_fallback_final_settings()
+
+                    app.post_to_ui(update_entries)
+            except Exception as error:
+                self.log_message(f"좌표 선택 중 오류: {error}")
+            finally:
+                if window_name:
+                    try:
+                        cv2.destroyWindow(window_name)
+                    except cv2.error:
+                        pass
+                finish_picker()
+
+        threading.Thread(target=pick_task, daemon=True).start()
+
+    def test_fallback_final_action(self):
+        if self.clicker.device is None:
+            self.log_message("⚠️ 디바이스가 연결되어 있지 않아 실행할 수 없습니다.")
+            return
+
+        action_key = REVERSE_NO_MATCH_ACTION_MAP.get(self.fb_final_combo.get(), "none")
+        if action_key == "none":
+            self.log_message("⚠️ 최종 동작이 '사용 안 함'으로 설정되어 있습니다.")
+            return
+
+        def task():
+            screen = self.clicker.capture_screen()
+            if screen is None:
+                self.log_message("화면 캡처 실패")
+                return
+            self.clicker._execute_final_action(screen, action_key)
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def open_settings_window(self):
+        if self.settings_window is None or not self.settings_window.winfo_exists():
+            self.settings_window = SettingsWindow(self)
+        else:
+            self.settings_window.focus()
+
+    def _prompt_and_save_template(self, crop_img, offset_x, offset_y, is_fallback):
+        target_type = "미매칭 복구 템플릿" if is_fallback else "기본 템플릿"
+        target_dir = (
+            self.clicker.fallback_template_dir
+            if is_fallback
+            else self.clicker.template_dir
+        )
+        dialog = ctk.CTkInputDialog(
+            text=f"저장할 {target_type} 이름을 입력하세요 (예: close_btn):",
+            title=f"{target_type} 저장",
+        )
+        file_name = dialog.get_input()
+        if not file_name:
+            self.log_message("저장 취소됨")
+            return
+
+        file_name = file_name.strip()
+        invalid_chars = set('<>:"/|?*') | {chr(92)}
+        stem = os.path.splitext(file_name)[0].rstrip(" .")
+        reserved = {"CON", "PRN", "AUX", "NUL"} | {
+            f"{prefix}{number}"
+            for prefix in ("COM", "LPT")
+            for number in range(1, 10)
+        }
+        if (
+            not file_name
+            or os.path.basename(file_name) != file_name
+            or any(char in invalid_chars for char in file_name)
+            or not stem
+            or stem.upper() in reserved
+            or file_name != file_name.rstrip(" .")
+        ):
+            from tkinter import messagebox
+            messagebox.showerror("잘못된 이름", "경로 문자나 Windows 예약 이름은 사용할 수 없습니다.")
+            return
+
+        if not file_name.lower().endswith(".png"):
+            file_name += ".png"
+        save_path = os.path.join(target_dir, file_name)
+
+        if os.path.exists(save_path):
+            from tkinter import messagebox
+            if not messagebox.askyesno(
+                "덮어쓰기 확인", f"{file_name} 파일이 이미 있습니다. 덮어쓸까요?"
+            ):
+                return
+
+        temp_path = f"{save_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            encoded_ok, encoded = cv2.imencode(".png", crop_img)
+            if not encoded_ok:
+                raise ValueError("이미지 인코딩 실패")
+            encoded.tofile(temp_path)
+            os.replace(temp_path, save_path)
+            self.clicker.invalidate_template_cache(save_path)
+
+            if is_fallback:
+                order = self.clicker.fallback_template_order
+                counts = self.clicker.fallback_template_counts
+                actions = self.clicker.fallback_template_actions
+                offsets = self.clicker.fallback_template_offsets
+                delays = self.clicker.fallback_template_delays
+            else:
+                order = self.clicker.template_order
+                counts = self.clicker.template_counts
+                actions = self.clicker.template_actions
+                offsets = self.clicker.template_offsets
+                delays = self.clicker.template_delays
+
+            if file_name not in order:
+                order.append(file_name)
+            counts.setdefault(file_name, 0)
+            actions.setdefault(file_name, "click")
+            offsets[file_name] = [offset_x, offset_y]
+            delays.setdefault(file_name, 0.0)
+            self.clicker.save_config(include_templates=True)
+            self.log_message(
+                f"[{target_type}] 저장 완료: {save_path} "
+                f"(클릭 오프셋: {offset_x:+d}, {offset_y:+d})"
+            )
+            self.app_owner.refresh_all_tabs_templates()
+        except Exception as error:
+            self.log_message(f"저장 중 오류: {error}")
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+    def start_cropping(self, is_fallback=False):
+        if getattr(self, "_crop_in_progress", False):
+            self.log_message("이미 템플릿 선택 작업이 진행 중입니다.")
+            return
+        if not self.app_owner.opencv_lock.acquire(blocking=False):
+            self.log_message("다른 화면 선택 창이 이미 열려 있습니다.")
+            return
+
+        self._crop_in_progress = True
+        self.crop_button.configure(state="disabled")
+        self.crop_fb_button.configure(state="disabled")
+        target_type = "미매칭 복구 템플릿" if is_fallback else "기본 템플릿"
+
+        def finish_crop():
+            self.app_owner.opencv_lock.release()
+
+            def update_buttons():
+                self._crop_in_progress = False
+                if self._destroyed or not self.winfo_exists():
+                    return
+                state = "normal" if self.clicker.device is not None else "disabled"
+                self.crop_button.configure(state=state)
+                self.crop_fb_button.configure(state=state)
+
+            self.app_owner.post_to_ui(update_buttons)
+
+        def crop_task():
+            open_windows = []
+            try:
+                self.log_message(f"[{target_type}] 화면을 가져오는 중...")
+                screen = self.clicker.capture_screen(grayscale=False)
+                if screen is None:
+                    self.log_message("캡처 실패")
+                    return
+
+                height, width = screen.shape[:2]
+                step1_window = (
+                    f"[Step 1] Select Template Area "
+                    f"({'Fallback' if is_fallback else 'Primary'}) - "
+                    f"{self.clicker.device_address}"
+                )
+                open_windows.append(step1_window)
+                cv2.namedWindow(step1_window, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(step1_window, width // 2, height // 2)
+                roi = cv2.selectROI(
+                    step1_window, screen, showCrosshair=True, fromCenter=False
+                )
+                cv2.destroyWindow(step1_window)
+                open_windows.remove(step1_window)
+                if roi[2] <= 0 or roi[3] <= 0:
+                    self.log_message("영역 선택 취소됨")
+                    return
+
+                roi_x, roi_y, roi_width, roi_height = map(int, roi)
+                crop_img = screen[
+                    roi_y:roi_y + roi_height,
+                    roi_x:roi_x + roi_width,
+                ].copy()
+                banner_height = 65
+                step2_window = (
+                    f"[Step 2] Select Click Target "
+                    f"({'Fallback' if is_fallback else 'Primary'}) - "
+                    f"{self.clicker.device_address}"
+                )
+                open_windows.append(step2_window)
+                cv2.namedWindow(step2_window, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(
+                    step2_window, width // 2, (height + banner_height) // 2
+                )
+                default_point = [
+                    roi_x + roi_width // 2,
+                    roi_y + roi_height // 2,
+                ]
+                selected_point = list(default_point)
+
+                def update_preview():
+                    display = screen.copy()
+                    cv2.rectangle(
+                        display,
+                        (roi_x, roi_y),
+                        (roi_x + roi_width, roi_y + roi_height),
+                        (0, 255, 0),
+                        2,
+                    )
+                    x, y = selected_point
+                    cv2.circle(display, (x, y), 8, (0, 0, 255), 2)
+                    cv2.drawMarker(
+                        display, (x, y), (0, 0, 255),
+                        cv2.MARKER_CROSS, 22, 2
+                    )
+                    banner = np.full(
+                        (banner_height, width, 3), 30, dtype=np.uint8
+                    )
+                    offset_x, offset_y = x - roi_x, y - roi_y
+                    position_type = (
+                        " [Default Center]"
+                        if selected_point == default_point
+                        else " [Custom Target]"
+                    )
+                    cv2.putText(
+                        banner,
+                        f"Target: ({x}, {y}) | Offset: "
+                        f"({offset_x:+d}, {offset_y:+d}){position_type}",
+                        (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (0, 255, 255), 2, cv2.LINE_AA,
+                    )
+                    cv2.putText(
+                        banner,
+                        "Click screen -> Enter/Space: Confirm (Cancel: 'c' or ESC)",
+                        (15, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
+                        (220, 220, 220), 1, cv2.LINE_AA,
+                    )
+                    cv2.imshow(step2_window, np.vstack([display, banner]))
+
+                def on_mouse(event, mouse_x, mouse_y, flags, param):
+                    if (
+                        event == cv2.EVENT_LBUTTONDOWN
+                        and 0 <= mouse_y < height
+                        and 0 <= mouse_x < width
+                    ):
+                        selected_point[:] = [mouse_x, mouse_y]
+                        update_preview()
+
+                cv2.setMouseCallback(step2_window, on_mouse)
+                update_preview()
+                cancelled = False
+                while True:
+                    key = cv2.waitKey(30) & 0xFF
+                    if key in (13, 32):
+                        break
+                    if key in (ord("c"), ord("C"), 27):
+                        cancelled = True
+                        break
+                    try:
+                        if cv2.getWindowProperty(
+                            step2_window, cv2.WND_PROP_VISIBLE
+                        ) < 1:
+                            cancelled = True
+                            break
+                    except cv2.error:
+                        cancelled = True
+                        break
+
+                cv2.destroyWindow(step2_window)
+                open_windows.remove(step2_window)
+                if cancelled:
+                    self.log_message("클릭 위치 선택이 취소되었습니다.")
+                    return
+
+                offset_x = selected_point[0] - roi_x
+                offset_y = selected_point[1] - roi_y
+                self.app_owner.post_to_ui(
+                    lambda: self._prompt_and_save_template(
+                        crop_img, offset_x, offset_y, is_fallback
+                    )
+                )
+            except Exception as error:
+                self.log_message(f"템플릿 선택 중 오류: {error}")
+            finally:
+                for window_name in open_windows:
+                    try:
+                        cv2.destroyWindow(window_name)
+                    except cv2.error:
+                        pass
+                finish_crop()
+
+        threading.Thread(target=crop_task, daemon=True).start()
+
+
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        self.title(f"Terabox Auto Clicker Multi-Instance {VERSION}")
+        self.geometry("1300x760")
+        self.minsize(1050, 600)
+        
+        self.tab_frames = {}
+        self.tab_counter = 0
+        self._closing = False
+        self._initializing_tabs = True
+        self._ui_queue = queue.SimpleQueue()
+        self.opencv_lock = threading.Lock()
+        self._ui_pump_id = self.after(30, self._drain_ui_queue)
+        self._timer_pump_id = self.after(100, self._pump_timer_updates)
+
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        # --- Top Global Control Toolbar ---
+        self.top_bar = ctk.CTkFrame(self, height=50)
+        self.top_bar.pack(fill="x", padx=10, pady=(10, 5))
+
+        self.logo_label = ctk.CTkLabel(
+            self.top_bar, 
+            text="⚡ Terabox Clicker Multi", 
+            font=ctk.CTkFont(size=18, weight="bold")
+        )
+        self.logo_label.pack(side="left", padx=(15, 15))
+
+        # Top Bar Control Buttons (Unified style & font)
+        btn_font = ctk.CTkFont(size=13, weight="bold")
+
+        self.connect_all_btn = ctk.CTkButton(
+            self.top_bar,
+            text="🔗  전체 연결",
+            font=btn_font,
+            width=115,
+            fg_color="#27AE60",
+            hover_color="#1E8449",
+            command=self.connect_all_instances
+        )
+        self.connect_all_btn.pack(side="left", padx=4)
+
+        self.start_all_btn = ctk.CTkButton(
+            self.top_bar,
+            text="▶  전체 시작",
+            font=btn_font,
+            width=115,
+            fg_color="#2EA043",
+            hover_color="#238636",
+            command=self.start_all_clickers
+        )
+        self.start_all_btn.pack(side="left", padx=4)
+
+        self.stop_all_btn = ctk.CTkButton(
+            self.top_bar,
+            text="⏹  전체 중지",
+            font=btn_font,
+            width=115,
+            fg_color="#DA3633",
+            hover_color="#B62324",
+            command=self.stop_all_clickers
+        )
+        self.stop_all_btn.pack(side="left", padx=4)
+
+        self.add_tab_btn = ctk.CTkButton(
+            self.top_bar,
+            text="➕  인스턴스 탭 추가",
+            font=btn_font,
+            width=145,
+            fg_color="#1F6FE5",
+            hover_color="#1859B8",
+            command=self.add_new_instance_dialog
+        )
+        self.add_tab_btn.pack(side="left", padx=4)
+
+
+        # --- Main Workspace: Tab View ---
+        self.tabview = ctk.CTkTabview(self)
+        self.tabview.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        try:
+            self.tabview._segmented_button.configure(font=ctk.CTkFont(size=12, weight="bold"))
+        except Exception:
+            pass
+
+        # Load saved instances or create initial tab
+        self.load_and_initialize_tabs()
+
+        # Auto refresh devices after short delay
+        self.after(500, self.refresh_all_devices)
+
+    def format_tab_name(self, index, device_address):
+        addr_str = str(device_address).strip()
+        if addr_str.startswith("emulator-"):
+            short_addr = addr_str.replace("emulator-", "")
+        elif addr_str.startswith("127.0.0.1:"):
+            short_addr = addr_str.replace("127.0.0.1:", ":")
+        elif len(addr_str) > 14:
+            short_addr = addr_str[-12:]
+        else:
+            short_addr = addr_str
+        return f"Inst {index} ({short_addr})"
+
+    def post_to_ui(self, callback):
+        if not self._closing:
+            self._ui_queue.put(callback)
+
+    def _drain_ui_queue(self):
+        if self._closing:
+            return
+        for _ in range(100):
+            try:
+                callback = self._ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                callback()
+            except Exception:
+                pass
+        self._ui_pump_id = self.after(30, self._drain_ui_queue)
+
+    def _pump_timer_updates(self):
+        if self._closing:
+            return
+        for frame in tuple(self.tab_frames.values()):
+            try:
+                frame.update_timer_display()
+            except Exception:
+                pass
+        self._timer_pump_id = self.after(100, self._pump_timer_updates)
+
+    def load_and_initialize_tabs(self):
+        config = TeraboxClicker.read_config(CONFIG_PATH)
+        saved_addresses = []
+        instances = config.get("instances", [])
+        if isinstance(instances, list):
+            for instance in instances:
+                if not isinstance(instance, dict):
+                    continue
+                address = instance.get("device_address")
+                if address and address not in saved_addresses:
+                    saved_addresses.append(address)
+        if not saved_addresses and config.get("device_address"):
+            saved_addresses.append(config["device_address"])
+        if not saved_addresses:
+            saved_addresses = ["127.0.0.1:5555"]
+
+        first_tab = None
+        try:
+            for address in saved_addresses:
+                frame = self.add_instance_tab(device_address=address)
+                if frame is not None and first_tab is None:
+                    first_tab = frame.tab_name
+        finally:
+            self._initializing_tabs = False
+
+        if first_tab:
+            self.tabview.set(first_tab)
+            self.after(100, lambda: self.tabview.set(first_tab))
+        self.save_app_config()
+
+    def add_new_instance_dialog(self):
+        AddInstanceWindow(self)
+
+    def add_instance_tab(self, device_address="127.0.0.1:5555"):
+        device_address = str(device_address).strip()
+        if not device_address:
+            return None
+        for frame in self.tab_frames.values():
+            if frame.clicker.device_address == device_address:
+                self.tabview.set(frame.tab_name)
+                return None
+
+        self.tab_counter += 1
+        tab_name = self.format_tab_name(self.tab_counter, device_address)
+        suffix = 1
+        base_name = tab_name
+        while tab_name in self.tab_frames:
+            suffix += 1
+            tab_name = f"{base_name}_{suffix}"
+
+        tab_obj = self.tabview.add(tab_name)
+        frame = InstanceTabFrame(
+            tab_obj,
+            app_owner=self,
+            tab_name=tab_name,
+            device_address=device_address,
+        )
+        frame.pack(fill="both", expand=True)
+        self.tab_frames[tab_name] = frame
+        self.tabview.set(tab_name)
+        if not self._initializing_tabs:
+            self.save_app_config()
+        return frame
+
+    def remove_instance_tab(self, tab_name):
+        if len(self.tab_frames) <= 1:
+            from tkinter import messagebox
+            messagebox.showwarning("삭제 불가", "최소 1개의 인스턴스 탭이 존재해야 합니다.")
+            return
+
+        frame = self.tab_frames.pop(tab_name, None)
+        if frame is None:
+            return
+        frame.shutdown()
+        self.tabview.delete(tab_name)
+        self.save_app_config()
+
+    def refresh_all_tabs_templates(self):
+        for frame in tuple(self.tab_frames.values()):
+            frame.refresh_templates()
+
+    def update_template_count_for_all(self, filename, count, is_fallback):
+        for frame in tuple(self.tab_frames.values()):
+            labels = (
+                frame.fallback_template_count_labels
+                if is_fallback
+                else frame.template_count_labels
+            )
+            label = labels.get(filename)
+            if label is not None and label.winfo_exists():
+                label.configure(text=f"Clicks: {count}")
+
+    def start_all_clickers(self):
+        for frame in self.tab_frames.values():
+            if frame.clicker.device and not frame.clicker.is_running:
+                frame.start_clicker_loop()
+
+    def stop_all_clickers(self):
+        for frame in self.tab_frames.values():
+            if frame.clicker.is_running:
+                frame.stop_clicker_loop()
+
+    def connect_all_instances(self):
+        for frame in self.tab_frames.values():
+            if frame.clicker.device is None:
+                frame.toggle_connection()
+
+    def refresh_all_devices(self):
+        def task():
+            dummy_clicker = TeraboxClicker()
+            devices = dummy_clicker.get_connected_devices()
+
+            def update_ui():
+                if self._closing:
+                    return
+                for frame in tuple(self.tab_frames.values()):
+                    current_list = list(devices)
+                    address = frame.clicker.device_address
+                    if address and address not in current_list:
+                        current_list.append(address)
+                    frame.update_device_combo_values(current_list)
+
+            self.post_to_ui(update_ui)
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def save_app_config(self):
+        instances_data = []
+        for frame in self.tab_frames.values():
+            clicker = frame.clicker
+            instances_data.append({
+                "device_address": clicker.device_address,
+                "scan_interval": clicker.scan_interval,
+                "no_match_timeout": clicker.no_match_timeout,
+                "similarity_threshold": clicker.similarity_threshold,
+                "match_grayscale": clicker.match_grayscale,
+                "enable_random_click": clicker.enable_random_click,
+                "random_click_interval": clicker.random_click_interval,
+                "double_click_interval": getattr(clicker, 'double_click_interval', 1.0),
+                "no_match_action": clicker.no_match_action,
+                "no_match_interval": clicker.no_match_interval,
+                "no_match_coords": list(clicker.no_match_coords),
+                "fallback_final_action": getattr(clicker, 'fallback_final_action', 'none'),
+                "fallback_final_coords": list(getattr(clicker, 'fallback_final_coords', [500, 500])),
+            })
+        return TeraboxClicker.update_instances_config(
+            instances_data, CONFIG_PATH
+        )
+
+    def on_closing(self):
+        if self._closing:
+            return
+        self._closing = True
+        TemplatePreviewTooltip.get_instance().hide()
+        for frame in tuple(self.tab_frames.values()):
+            frame.shutdown()
+        self.save_app_config()
+        try:
+            self.after_cancel(self._ui_pump_id)
+        except Exception:
+            pass
+        try:
+            self.after_cancel(self._timer_pump_id)
+        except Exception:
+            pass
+        self.destroy()
+
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
+
+
