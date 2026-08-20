@@ -488,7 +488,240 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         clicker.delete_template("delayed_btn.png")
         self.assertNotIn("delayed_btn.png", clicker.template_delays)
 
+    def test_preload_templates_eliminates_subsequent_io(self):
+        template = self._pattern()
+        template_path = Path(self.temp_dir, "templates", "preloaded.png")
+        self._write_png(template_path, template)
+
+        TeraboxClicker.invalidate_template_cache()
+        loaded = TeraboxClicker.preload_templates(
+            [Path(self.temp_dir, "templates")], grayscales=(False, True)
+        )
+        self.assertGreaterEqual(loaded, 2)
+
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="emulator-test",
+            logger=lambda _: None,
+        )
+        screen = np.zeros((80, 100, 3), dtype=np.uint8)
+        screen[20:32, 30:42] = template
+
+        original_fromfile = np.fromfile
+        with patch("main.np.fromfile", wraps=original_fromfile) as fromfile:
+            # Grayscale match
+            match1 = clicker.find_template(
+                screen, str(template_path), threshold=0.99, filename="preloaded.png"
+            )
+            # Color match
+            clicker.match_grayscale = False
+            match2 = clicker.find_template(
+                screen, str(template_path), threshold=0.99, filename="preloaded.png"
+            )
+
+        self.assertIsNotNone(match1)
+        self.assertIsNotNone(match2)
+        # Because it was preloaded, np.fromfile must NOT be called at all during find_template
+        self.assertEqual(fromfile.call_count, 0)
+
+    def test_multi_instance_shares_preloaded_template_cache(self):
+        template = self._pattern()
+        template_path = Path(self.temp_dir, "templates", "shared.png")
+        self._write_png(template_path, template)
+
+        TeraboxClicker.invalidate_template_cache()
+        TeraboxClicker.preload_templates(
+            [Path(self.temp_dir, "templates")], grayscales=(True,)
+        )
+
+        inst1 = TeraboxClicker(base_dir=self.temp_dir, device_address="emulator-1", logger=lambda _: None)
+        inst2 = TeraboxClicker(base_dir=self.temp_dir, device_address="emulator-2", logger=lambda _: None)
+        inst3 = TeraboxClicker(base_dir=self.temp_dir, device_address="emulator-3", logger=lambda _: None)
+
+        screen = np.zeros((80, 100, 3), dtype=np.uint8)
+        screen[20:32, 30:42] = template
+
+        original_fromfile = np.fromfile
+        with patch("main.np.fromfile", wraps=original_fromfile) as fromfile:
+            m1 = inst1.find_template(screen, str(template_path), threshold=0.99)
+            m2 = inst2.find_template(screen, str(template_path), threshold=0.99)
+            m3 = inst3.find_template(screen, str(template_path), threshold=0.99)
+
+        self.assertIsNotNone(m1)
+        self.assertIsNotNone(m2)
+        self.assertIsNotNone(m3)
+        self.assertEqual(fromfile.call_count, 0)
+
+    def test_configurable_post_action_delay(self):
+        template = self._pattern()
+        template_path = Path(self.temp_dir, "templates", "action_btn.png")
+        self._write_png(template_path, template)
+
+        config = {
+            "device_address": "emulator-test",
+            "template_order": ["action_btn.png"],
+            "post_action_delay": 3.5,
+        }
+        Path(self.temp_dir, "config.json").write_text(
+            json.dumps(config), encoding="utf-8"
+        )
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="emulator-test",
+            logger=lambda _: None,
+        )
+        self.assertEqual(clicker.post_action_delay, 3.5)
+
+        mock_device = Mock()
+        clicker.device = mock_device
+        waited_delays = []
+        clicker._wait_after_action = lambda sec: (waited_delays.append(sec), True)[1]
+
+        screen = np.zeros((80, 100, 3), dtype=np.uint8)
+        screen[20:32, 30:42] = template
+        clicker.capture_screen = Mock(return_value=screen)
+
+        success = clicker.run_once()
+        self.assertTrue(success)
+        self.assertIn(3.5, waited_delays)
+
+    def test_two_stage_matching_skips_small_templates(self):
+        """Small templates (< 20px) should skip the downscale pre-filter and match at full res."""
+        small_template = self._pattern(size=8)
+        template_path = Path(self.temp_dir, "templates", "tiny_icon.png")
+        self._write_png(template_path, small_template)
+
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="emulator-test",
+            logger=lambda _: None,
+        )
+
+        screen = np.zeros((80, 100, 3), dtype=np.uint8)
+        screen[10:18, 20:28] = small_template
+
+        match = clicker.find_template(screen, str(template_path), threshold=0.99)
+        self.assertIsNotNone(match, "Small template should match at full resolution")
+        x, y, confidence = match
+        self.assertEqual(x, 24)
+        self.assertEqual(y, 14)
+        self.assertGreaterEqual(confidence, 0.99)
+
+    def test_two_stage_matching_rejects_via_prescale(self):
+        """Large templates not present should be quickly rejected by the prescale filter."""
+        large_template = self._pattern(size=40)
+        template_path = Path(self.temp_dir, "templates", "large_btn.png")
+        self._write_png(template_path, large_template)
+
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="emulator-test",
+            logger=lambda _: None,
+        )
+
+        # Screen with no matching region
+        screen = np.zeros((200, 300, 3), dtype=np.uint8)
+
+        match = clicker.find_template(screen, str(template_path), threshold=0.9)
+        self.assertIsNone(match, "Non-matching template should be rejected")
+
+    def test_subprocess_capture_fallback(self):
+        """capture_screen should fallback to ppadb screencap when subprocess fails."""
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="127.0.0.1:5555",
+            logger=lambda _: None,
+        )
+
+        # Create a test image and encode it as PNG
+        test_img = np.zeros((100, 80, 3), dtype=np.uint8)
+        test_img[10:50, 10:50] = [0, 255, 0]
+        _, png_bytes = cv2.imencode(".png", test_img)
+        png_data = png_bytes.tobytes()
+
+        mock_device = Mock()
+        mock_device.screencap.return_value = png_data
+        clicker.device = mock_device
+
+        # Mock subprocess to fail so fallback to ppadb triggers
+        failed_proc = Mock()
+        failed_proc.returncode = 1
+        failed_proc.stdout = b""
+        with patch("main.subprocess.run", return_value=failed_proc):
+            result = clicker.capture_screen(grayscale=False)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.shape, (100, 80, 3))
+        mock_device.screencap.assert_called_once()
+
+    def test_config_cache_avoids_redundant_reads(self):
+        """In-memory config cache should avoid re-reading unchanged files."""
+        config = {"device_address": "emulator-test", "scan_interval": 3}
+        config_path = os.path.join(self.temp_dir, "config.json")
+        Path(config_path).write_text(json.dumps(config), encoding="utf-8")
+
+        # First read - should populate cache
+        result1 = TeraboxClicker._read_config_unlocked(config_path)
+        self.assertEqual(result1["scan_interval"], 3)
+
+        # Second read - should hit cache (same mtime)
+        result2 = TeraboxClicker._read_config_unlocked(config_path)
+        self.assertEqual(result2["scan_interval"], 3)
+
+        # Verify both are independent dicts (not shared references)
+        result1["scan_interval"] = 999
+        result3 = TeraboxClicker._read_config_unlocked(config_path)
+        self.assertEqual(result3["scan_interval"], 3)
+
+    def test_template_pre_and_post_action_delays(self):
+        template = self._pattern()
+        template_path = Path(self.temp_dir, "templates", "test_btn.png")
+        self._write_png(template_path, template)
+
+        # 1. Test POST-action delay
+        config = {
+            "device_address": "emulator-test",
+            "template_order": ["test_btn.png"],
+            "template_delays": {"test_btn.png": 4.0},
+            "template_delay_types": {"test_btn.png": "post"},
+            "post_action_delay": 1.0,
+        }
+        Path(self.temp_dir, "config.json").write_text(
+            json.dumps(config), encoding="utf-8"
+        )
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="emulator-test",
+            logger=lambda _: None,
+        )
+        self.assertEqual(clicker.template_delays.get("test_btn.png"), 4.0)
+        self.assertEqual(clicker.template_delay_types.get("test_btn.png"), "post")
+
+        mock_device = Mock()
+        clicker.device = mock_device
+        events = []
+        clicker._wait_after_action = lambda sec: (events.append(f"wait_{sec}"), True)[1]
+        clicker._execute_action = lambda action, x, y: (events.append("action"), True)[1]
+
+        screen = np.zeros((80, 100, 3), dtype=np.uint8)
+        screen[20:32, 30:42] = template
+        clicker.capture_screen = Mock(return_value=screen)
+
+        success = clicker.run_once()
+        self.assertTrue(success)
+        # With post-action delay, action runs FIRST, then post-wait of 4s runs
+        self.assertEqual(events, ["action", "wait_4"])
+
+        # 2. Test PRE-action delay
+        clicker.set_template_delay("test_btn.png", 2.5, "pre")
+        events.clear()
+        success = clicker.run_once()
+        self.assertTrue(success)
+        # With pre-action delay, pre-wait of 2.5s runs first, then action, then global post_action_delay (1s)
+        self.assertEqual(events, ["wait_2.5", "action", "wait_1"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

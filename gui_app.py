@@ -9,7 +9,7 @@ import numpy as np
 import queue
 from main import TeraboxClicker, CONFIG_PATH
 
-VERSION = "v0.3.3"
+VERSION = "v0.3.5"
 
 # 앱 전역 테마를 Dark 모드로 고정
 ctk.set_appearance_mode("Dark")
@@ -29,6 +29,8 @@ class TemplatePreviewTooltip:
     """Hover preview popup showing template image thumbnail, dimensions, and offset."""
     _instance = None
     _image_cache = {}
+    _image_cache_order = []
+    _IMAGE_CACHE_MAX = 50
 
     @classmethod
     def get_instance(cls, root_window=None):
@@ -102,6 +104,11 @@ class TemplatePreviewTooltip:
 
                 photo_img = ImageTk.PhotoImage(scaled_img)
                 self._image_cache[sig] = (photo_img, orig_w, orig_h)
+                self._image_cache_order.append(sig)
+                # LRU eviction
+                while len(self._image_cache_order) > self._IMAGE_CACHE_MAX:
+                    evict_sig = self._image_cache_order.pop(0)
+                    self._image_cache.pop(evict_sig, None)
 
             parent = self.root if (self.root and self.root.winfo_exists()) else widget.winfo_toplevel()
             self.tip_window = tw = tk.Toplevel(parent)
@@ -184,7 +191,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.clicker = parent_frame.clicker
         self._save_after_id = None
         self.title(f"Settings - {self.clicker.device_address}")
-        self.geometry("440x720")
+        self.geometry("440x780")
         self.resizable(False, False)
         
         # 메인 창에 종속 설정 및 모달 효과
@@ -212,6 +219,15 @@ class SettingsWindow(ctk.CTkToplevel):
         self.double_click_entry.pack(fill="x", padx=30, pady=(0, 8))
         self.double_click_entry.bind("<KeyRelease>", self.schedule_save)
         self.double_click_entry.bind("<FocusOut>", lambda e: self.save_settings())
+
+        # Post-Action Delay (동작 후 대기 시간)
+        self.post_delay_label = ctk.CTkLabel(self, text="동작 후 대기 시간 (Post-Action Delay, sec):", anchor="w")
+        self.post_delay_label.pack(fill="x", padx=30)
+        self.post_delay_entry = ctk.CTkEntry(self)
+        self.post_delay_entry.insert(0, str(getattr(self.clicker, 'post_action_delay', 2.0)))
+        self.post_delay_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.post_delay_entry.bind("<KeyRelease>", self.schedule_save)
+        self.post_delay_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
         # Similarity Threshold
         self.threshold_label = ctk.CTkLabel(self, text="이미지 유사도 임계값 (Similarity Threshold 0.1~1.0):", anchor="w")
@@ -430,6 +446,13 @@ class SettingsWindow(ctk.CTkToplevel):
             pass
 
         try:
+            value = float(self.post_delay_entry.get().strip())
+            if value >= 0.0:
+                self.clicker.post_action_delay = int(value) if value.is_integer() else value
+        except ValueError:
+            pass
+
+        try:
             value = float(self.threshold_entry.get().strip())
             if 0.0 < value <= 1.0:
                 self.clicker.similarity_threshold = value
@@ -484,8 +507,188 @@ class SettingsWindow(ctk.CTkToplevel):
             self._save_after_id = None
         self._persist_settings()
 
+class TemplateDelayWindow(ctk.CTkToplevel):
+    """Dialog for setting pre-action or post-action delay for a template."""
+    def __init__(self, parent_frame, filename, is_fallback=False):
+        super().__init__(parent_frame)
+        self.parent_frame = parent_frame
+        self.filename = filename
+        self.is_fallback = is_fallback
+        self.clicker = parent_frame.clicker
+
+        delays_dict = (
+            self.clicker.fallback_template_delays
+            if is_fallback
+            else self.clicker.template_delays
+        )
+        types_dict = (
+            self.clicker.fallback_template_delay_types
+            if is_fallback
+            else self.clicker.template_delay_types
+        )
+        current_delay = delays_dict.get(filename, 0.0)
+        current_type = types_dict.get(filename, "pre")
+
+        type_title = "미매칭 복구 템플릿" if is_fallback else "기본 템플릿"
+        self.title(f"지연 시간 설정 - {filename}")
+        self.geometry("450x430")
+        self.resizable(False, False)
+
+        self.transient(parent_frame.winfo_toplevel())
+        self.grab_set()
+
+        # Header
+        self.header_label = ctk.CTkLabel(
+            self,
+            text=f"⏱️ 지연 시간 설정 ({type_title})",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        )
+        self.header_label.pack(pady=(15, 5))
+
+        self.filename_label = ctk.CTkLabel(
+            self,
+            text=f"파일명: {filename}",
+            font=ctk.CTkFont(size=13),
+            text_color="#60A5FA",
+        )
+        self.filename_label.pack(pady=(0, 15))
+
+        # Timing Section (적용 시점)
+        self.timing_label = ctk.CTkLabel(
+            self,
+            text="지연 시간 적용 시점 (Delay Timing):",
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w",
+        )
+        self.timing_label.pack(fill="x", padx=30, pady=(0, 5))
+
+        self.timing_segmented = ctk.CTkSegmentedButton(
+            self,
+            values=["동작 전 대기 (Pre-Action)", "동작 후 대기 (Post-Action)"],
+            command=self._on_timing_changed,
+            font=ctk.CTkFont(weight="bold"),
+        )
+        self.timing_segmented.set(
+            "동작 후 대기 (Post-Action)"
+            if current_type == "post"
+            else "동작 전 대기 (Pre-Action)"
+        )
+        self.timing_segmented.pack(fill="x", padx=30, pady=(0, 6))
+
+        # Description box
+        self.desc_frame = ctk.CTkFrame(self, fg_color=("#2B2B2B", "#1C1D1F"), corner_radius=6)
+        self.desc_frame.pack(fill="x", padx=30, pady=(0, 12))
+
+        self.desc_label = ctk.CTkLabel(
+            self.desc_frame,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color="#A6ACAF",
+            justify="left",
+            wraplength=370,
+        )
+        self.desc_label.pack(padx=10, pady=8)
+        self._update_desc_text()
+
+        # Duration input
+        self.duration_label = ctk.CTkLabel(
+            self,
+            text="대기 시간 (초, Seconds - 0: 즉시 실행):",
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w",
+        )
+        self.duration_label.pack(fill="x", padx=30, pady=(0, 5))
+
+        self.duration_entry = ctk.CTkEntry(self, placeholder_text="예: 0, 0.5, 1, 2, 3")
+        self.duration_entry.insert(0, str(current_delay))
+        self.duration_entry.pack(fill="x", padx=30, pady=(0, 8))
+
+        # Preset buttons
+        self.preset_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.preset_frame.pack(fill="x", padx=30, pady=(0, 12))
+
+        presets = [("0초", 0), ("0.5초", 0.5), ("1초", 1.0), ("2초", 2.0), ("3초", 3.0), ("5초", 5.0)]
+        for label, val in presets:
+            btn = ctk.CTkButton(
+                self.preset_frame,
+                text=label,
+                width=52,
+                height=24,
+                fg_color="#333333",
+                hover_color="#555555",
+                command=lambda v=val: self._set_preset(v),
+            )
+            btn.pack(side="left", padx=2, expand=True)
+
+        # Action Buttons
+        self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.btn_frame.pack(fill="x", padx=30, pady=(8, 15))
+
+        self.save_btn = ctk.CTkButton(
+            self.btn_frame,
+            text="💾 저장 (Save)",
+            fg_color="#27AE60",
+            hover_color="#1E8449",
+            command=self.save_and_close,
+        )
+        self.save_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        self.cancel_btn = ctk.CTkButton(
+            self.btn_frame,
+            text="취소 (Cancel)",
+            fg_color="#4A4A4A",
+            hover_color="#5A5A5A",
+            command=self.close_window,
+        )
+        self.cancel_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
+
+    def _set_preset(self, val):
+        self.duration_entry.delete(0, "end")
+        self.duration_entry.insert(0, str(val))
+
+    def _on_timing_changed(self, choice):
+        self._update_desc_text()
+
+    def _update_desc_text(self):
+        choice = self.timing_segmented.get()
+        if "동작 후" in choice:
+            self.desc_label.configure(
+                text="💡 [동작 후 대기]\n클릭(동작)을 수행한 후, 다음 패턴 인식을 시작하기 전까지 지정된 시간 동안 아무 작업 없이 대기합니다.",
+                text_color="#5DADE2",
+            )
+        else:
+            self.desc_label.configure(
+                text="💡 [동작 전 대기]\n화면에서 템플릿을 인식한 직후, 클릭(동작)을 실행하기 전에 지정된 시간 동안 대기합니다.",
+                text_color="#F5B041",
+            )
+
+    def save_and_close(self):
+        val_str = self.duration_entry.get().strip()
+        try:
+            delay_sec = float(val_str)
+            if delay_sec < 0:
+                raise ValueError
+        except ValueError:
+            from tkinter import messagebox
+            messagebox.showerror("입력 오류", "0 이상의 숫자를 입력해주세요. (예: 0, 0.5, 1, 2.5)")
+            return
+
+        choice = self.timing_segmented.get()
+        delay_type = "post" if "동작 후" in choice else "pre"
+
+        if self.is_fallback:
+            self.clicker.set_fallback_template_delay(self.filename, delay_sec, delay_type)
+        else:
+            self.clicker.set_template_delay(self.filename, delay_sec, delay_type)
+
+        timing_name = "동작 후" if delay_type == "post" else "동작 전"
+        self.parent_frame.log_message(
+            f"⏱️ [{self.filename}] 지연 시간: {delay_sec:g}초 ({timing_name} 대기) 설정 완료"
+        )
+        self.parent_frame.app_owner.refresh_all_tabs_templates()
+        self.close_window()
+
     def close_window(self):
-        self.save_settings()
         try:
             self.grab_release()
         except Exception:
@@ -979,7 +1182,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             timestamp = time.strftime("[%H:%M:%S] ")
             self.log_textbox.insert("end", f"{timestamp}{message}\n")
             self._log_line_count += 1
-            if self._log_line_count > 1000:
+            if self._log_line_count > 500:
                 self.log_textbox.delete("1.0", "201.0")
                 self._log_line_count -= 200
             self.log_textbox.see("end")
@@ -997,8 +1200,41 @@ class InstanceTabFrame(ctk.CTkFrame):
             )
         )
 
+    def _set_tab_warning_state(self, is_warning):
+        if self._destroyed or not hasattr(self.app_owner, "tabview"):
+            return
+        try:
+            segmented_btn = getattr(self.app_owner.tabview, "_segmented_button", None)
+            if not segmented_btn or not hasattr(segmented_btn, "_buttons_dict"):
+                return
+            btn = segmented_btn._buttons_dict.get(self.tab_name)
+            if not btn or not btn.winfo_exists():
+                return
+
+            if is_warning:
+                current_text = str(btn.cget("text"))
+                if not current_text.startswith("⚠️"):
+                    btn.configure(
+                        text=f"⚠️ {self.tab_name}",
+                        text_color="#FF4D4D",
+                        border_width=2,
+                        border_color="#FF4D4D",
+                    )
+            else:
+                current_text = str(btn.cget("text"))
+                if current_text != self.tab_name or btn.cget("border_width") != 0:
+                    btn.configure(
+                        text=self.tab_name,
+                        text_color=["#DCE4EE", "#DCE4EE"],
+                        border_width=0,
+                        border_color="transparent",
+                    )
+        except Exception:
+            pass
+
     def clear_warning_ui(self):
         self._alert_shown_for_current_timeout = False
+        self._set_tab_warning_state(False)
         if hasattr(self, "normal_header_fg"):
             self.header_frame.configure(fg_color=self.normal_header_fg)
         if self.clicker.is_running and self.clicker.device:
@@ -1068,22 +1304,27 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         # 2. 매칭없음 경고 시간
         if not is_running:
+            self._set_tab_warning_state(False)
             self.timeout_timer_label.configure(
                 text=f"⚠️ 매칭없음 경고: 정지됨 (설정: {timeout:.0f}s)" if timeout > 0 else "⚠️ 매칭없음 경고: 비활성화",
                 text_color="gray"
             )
         elif timeout <= 0:
+            self._set_tab_warning_state(False)
             self.timeout_timer_label.configure(
                 text="⚠️ 매칭없음 경고: 비활성화 (OFF)",
                 text_color="gray"
             )
         else:
             if timeout_elp >= timeout:
+                self._set_tab_warning_state(True)
                 self.timeout_timer_label.configure(
                     text=f"⚠️ 매칭없음 경고: 경고 발생 중! ({timeout_elp:.1f}s 경과)",
                     text_color="#FF4D4D"
                 )
             else:
+                if not self._alert_shown_for_current_timeout:
+                    self._set_tab_warning_state(False)
                 color = "#F39C12" if timeout_rem < 15 else "#D5D8DC"
                 self.timeout_timer_label.configure(
                     text=f"⚠️ 매칭없음 경고: {timeout_rem:.1f}초 남음 ({timeout_elp:.1f}/{timeout:.0f}s)",
@@ -1112,6 +1353,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         def show_warning_ui():
             if self._destroyed or not self.winfo_exists():
                 return
+            self._set_tab_warning_state(True)
             if not hasattr(self, "normal_header_fg"):
                 self.normal_header_fg = self.header_frame.cget("fg_color")
             self.header_frame.configure(fg_color="#5A1A1A")
@@ -1317,12 +1559,25 @@ class InstanceTabFrame(ctk.CTkFrame):
         action_btn.pack(side="right", padx=(4, 0))
 
         delays_dict = self.clicker.fallback_template_delays if is_fallback else self.clicker.template_delays
+        delay_types_dict = self.clicker.fallback_template_delay_types if is_fallback else self.clicker.template_delay_types
         delay = delays_dict.get(filename, 0.0)
-        delay_text = f"⏱️ {delay:g}s" if delay > 0 else "⏱️ 0s"
-        delay_fg = "#6C5B28" if delay > 0 else "#333333"
-        delay_hover = "#8D7736" if delay > 0 else "#444444"
+        delay_type = delay_types_dict.get(filename, "pre")
+        if delay > 0:
+            if delay_type == "post":
+                delay_text = f"⏱️후 {delay:g}s"
+                delay_fg = "#1A5276"
+                delay_hover = "#2471A3"
+            else:
+                delay_text = f"⏱️전 {delay:g}s"
+                delay_fg = "#7D6608"
+                delay_hover = "#9A7D0A"
+        else:
+            delay_text = "⏱️ 0s"
+            delay_fg = "#333333"
+            delay_hover = "#444444"
+
         delay_cmd = (lambda f=filename: self.set_fallback_template_delay_event(f)) if is_fallback else (lambda f=filename: self.set_template_delay_event(f))
-        delay_btn = ctk.CTkButton(btn_frame, text=delay_text, width=54, height=25,
+        delay_btn = ctk.CTkButton(btn_frame, text=delay_text, width=62, height=25,
                                   fg_color=delay_fg, hover_color=delay_hover,
                                   command=delay_cmd)
         delay_btn.pack(side="right", padx=0)
@@ -1494,50 +1749,10 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.app_owner.refresh_all_tabs_templates()
 
     def set_template_delay_event(self, filename):
-        current = self.clicker.template_delays.get(filename, 0.0)
-        dialog = ctk.CTkInputDialog(
-            text=f"'{filename}' 인식 후 작업 실행 전 지연 시간(초)을 입력하세요:\n(현재: {current:g}초 / 0: 즉시 실행, 예: 0.5, 1, 2.5)",
-            title=f"지연 시간 설정 - {filename}",
-        )
-        val = dialog.get_input()
-        if val is None:
-            return
-        val = val.strip()
-        if not val:
-            return
-        try:
-            delay_sec = float(val)
-            if delay_sec < 0:
-                raise ValueError
-            self.clicker.set_template_delay(filename, delay_sec)
-            self.log_message(f"⏱️ [{filename}] 지연 시간이 {delay_sec:g}초로 설정되었습니다.")
-            self.app_owner.refresh_all_tabs_templates()
-        except ValueError:
-            from tkinter import messagebox
-            messagebox.showerror("입력 오류", "0 이상의 숫자를 입력해주세요. (예: 0, 0.5, 1.5)")
+        TemplateDelayWindow(self, filename, is_fallback=False)
 
     def set_fallback_template_delay_event(self, filename):
-        current = self.clicker.fallback_template_delays.get(filename, 0.0)
-        dialog = ctk.CTkInputDialog(
-            text=f"'{filename}' [미매칭 복구] 인식 후 작업 실행 전 지연 시간(초)을 입력하세요:\n(현재: {current:g}초 / 0: 즉시 실행, 예: 0.5, 1, 2.5)",
-            title=f"지연 시간 설정 - {filename}",
-        )
-        val = dialog.get_input()
-        if val is None:
-            return
-        val = val.strip()
-        if not val:
-            return
-        try:
-            delay_sec = float(val)
-            if delay_sec < 0:
-                raise ValueError
-            self.clicker.set_fallback_template_delay(filename, delay_sec)
-            self.log_message(f"⏱️ [미매칭 복구: {filename}] 지연 시간이 {delay_sec:g}초로 설정되었습니다.")
-            self.app_owner.refresh_all_tabs_templates()
-        except ValueError:
-            from tkinter import messagebox
-            messagebox.showerror("입력 오류", "0 이상의 숫자를 입력해주세요. (예: 0, 0.5, 1.5)")
+        TemplateDelayWindow(self, filename, is_fallback=True)
 
     def reset_counts_event(self):
         self.clicker.reset_counts()
@@ -1758,6 +1973,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             encoded.tofile(temp_path)
             os.replace(temp_path, save_path)
             self.clicker.invalidate_template_cache(save_path)
+            self.clicker.preload_templates(os.path.dirname(save_path))
 
             if is_fallback:
                 order = self.clicker.fallback_template_order
@@ -1765,12 +1981,14 @@ class InstanceTabFrame(ctk.CTkFrame):
                 actions = self.clicker.fallback_template_actions
                 offsets = self.clicker.fallback_template_offsets
                 delays = self.clicker.fallback_template_delays
+                delay_types = self.clicker.fallback_template_delay_types
             else:
                 order = self.clicker.template_order
                 counts = self.clicker.template_counts
                 actions = self.clicker.template_actions
                 offsets = self.clicker.template_offsets
                 delays = self.clicker.template_delays
+                delay_types = self.clicker.template_delay_types
 
             if file_name not in order:
                 order.append(file_name)
@@ -1778,6 +1996,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             actions.setdefault(file_name, "click")
             offsets[file_name] = [offset_x, offset_y]
             delays.setdefault(file_name, 0.0)
+            delay_types.setdefault(file_name, "pre")
             self.clicker.save_config(include_templates=True)
             self.log_message(
                 f"[{target_type}] 저장 완료: {save_path} "
@@ -1976,8 +2195,11 @@ class App(ctk.CTk):
         self._initializing_tabs = True
         self._ui_queue = queue.SimpleQueue()
         self.opencv_lock = threading.Lock()
-        self._ui_pump_id = self.after(30, self._drain_ui_queue)
-        self._timer_pump_id = self.after(100, self._pump_timer_updates)
+        self._ui_pump_id = self.after(50, self._drain_ui_queue)
+        self._timer_pump_id = self.after(500, self._pump_timer_updates)
+
+        # Preload templates in background thread
+        threading.Thread(target=TeraboxClicker.preload_templates, daemon=True).start()
 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -2082,17 +2304,24 @@ class App(ctk.CTk):
                 callback()
             except Exception:
                 pass
-        self._ui_pump_id = self.after(30, self._drain_ui_queue)
+        self._ui_pump_id = self.after(50, self._drain_ui_queue)
 
     def _pump_timer_updates(self):
         if self._closing:
             return
-        for frame in tuple(self.tab_frames.values()):
-            try:
-                frame.update_timer_display()
-            except Exception:
-                pass
-        self._timer_pump_id = self.after(100, self._pump_timer_updates)
+        # Only update the currently visible tab for efficiency
+        try:
+            current_tab = self.tabview.get()
+        except Exception:
+            current_tab = None
+        if current_tab:
+            frame = self.tab_frames.get(current_tab)
+            if frame:
+                try:
+                    frame.update_timer_display()
+                except Exception:
+                    pass
+        self._timer_pump_id = self.after(500, self._pump_timer_updates)
 
     def load_and_initialize_tabs(self):
         config = TeraboxClicker.read_config(CONFIG_PATH)
@@ -2233,6 +2462,7 @@ class App(ctk.CTk):
                 "enable_random_click": clicker.enable_random_click,
                 "random_click_interval": clicker.random_click_interval,
                 "double_click_interval": getattr(clicker, 'double_click_interval', 1.0),
+                "post_action_delay": getattr(clicker, 'post_action_delay', 2.0),
                 "no_match_action": clicker.no_match_action,
                 "no_match_interval": clicker.no_match_interval,
                 "no_match_coords": list(clicker.no_match_coords),

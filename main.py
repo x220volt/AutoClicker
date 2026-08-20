@@ -15,13 +15,16 @@ import time
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 VALID_TEMPLATE_ACTIONS = {"click", "double_click", "click_click", "double", "back"}
+VALID_DELAY_TYPES = {"pre", "post"}
 VALID_NO_MATCH_ACTIONS = {
     "none", "fallback_list", "random_click", "custom_click",
     "custom_double_click", "double_click", "click_click", "back",
 }
 CONFIG_FILENAME = "config.json"
-COUNT_FLUSH_INTERVAL = 3.0
+COUNT_FLUSH_INTERVAL = 5.0
 ADB_COMMAND_TIMEOUT = 10.0
+PRESCALE_FACTOR = 0.5
+PRESCALE_MIN_TEMPLATE_DIM = 20
 
 
 def get_app_dir():
@@ -54,6 +57,7 @@ DEFAULT_MATCH_GRAYSCALE = True
 DEFAULT_ENABLE_RANDOM_CLICK = False
 DEFAULT_RANDOM_CLICK_INTERVAL = 30
 DEFAULT_DOUBLE_CLICK_INTERVAL = 1.0
+DEFAULT_POST_ACTION_DELAY = 2.0
 APP_DIR = get_app_dir()
 CONFIG_PATH = os.path.join(APP_DIR, CONFIG_FILENAME)
 ADB_PATH = get_default_adb_path(APP_DIR)
@@ -65,6 +69,7 @@ class TeraboxClicker:
     _config_lock = threading.RLock()
     _template_cache_lock = threading.RLock()
     _template_cache = {}
+    _scaled_template_cache = {}
     _pending_count_deltas = defaultdict(
         lambda: {
             "template_counts": defaultdict(int),
@@ -78,6 +83,9 @@ class TeraboxClicker:
             "fallback_template_counts": {},
         }
     )
+    _config_cache = {}
+    _config_cache_mtime = {}
+    _save_debounce_timers = {}
 
     def __init__(
         self,
@@ -96,6 +104,7 @@ class TeraboxClicker:
         on_match_callback=None,
         base_dir=None,
         match_grayscale=None,
+        post_action_delay=None,
     ):
         self.base_dir = os.path.abspath(base_dir or APP_DIR)
         self.adb_path = adb_path or get_default_adb_path(self.base_dir)
@@ -136,6 +145,11 @@ class TeraboxClicker:
             if double_click_interval is not None
             else DEFAULT_DOUBLE_CLICK_INTERVAL
         )
+        self.post_action_delay = (
+            post_action_delay
+            if post_action_delay is not None
+            else DEFAULT_POST_ACTION_DELAY
+        )
         self.no_match_action = "none"
         self.no_match_interval = self.random_click_interval
         self.no_match_coords = [500, 500]
@@ -169,11 +183,13 @@ class TeraboxClicker:
         self.template_actions = {}
         self.template_offsets = {}
         self.template_delays = {}
+        self.template_delay_types = {}
         self.fallback_template_order = []
         self.fallback_template_counts = {}
         self.fallback_template_actions = {}
         self.fallback_template_offsets = {}
         self.fallback_template_delays = {}
+        self.fallback_template_delay_types = {}
 
         os.makedirs(self.template_dir, exist_ok=True)
         os.makedirs(self.fallback_template_dir, exist_ok=True)
@@ -263,17 +279,38 @@ class TeraboxClicker:
         return result
 
     @staticmethod
-    def _read_config_unlocked(config_path):
+    def _safe_delay_types(value):
+        if not isinstance(value, dict):
+            return {}
+        result = {}
+        for filename, timing in value.items():
+            if not isinstance(filename, str):
+                continue
+            if timing in VALID_DELAY_TYPES:
+                result[filename] = timing
+        return result
+
+    @classmethod
+    def _read_config_unlocked(cls, config_path):
         if not os.path.exists(config_path):
             return {}
+        try:
+            mtime = os.path.getmtime(config_path)
+        except OSError:
+            mtime = None
+        cached_mtime = cls._config_cache_mtime.get(config_path)
+        if cached_mtime is not None and mtime == cached_mtime and config_path in cls._config_cache:
+            return dict(cls._config_cache[config_path])
         with open(config_path, "r", encoding="utf-8") as file:
             config = json.load(file)
         if not isinstance(config, dict):
             raise ValueError("config.json 최상위 값은 객체여야 합니다.")
-        return config
+        cls._config_cache[config_path] = config
+        cls._config_cache_mtime[config_path] = mtime
+        return dict(config)
 
-    @staticmethod
-    def _atomic_write_config_unlocked(config_path, config):
+    @classmethod
+    def _atomic_write_config_unlocked(cls, config_path, config, do_fsync=True):
         os.makedirs(os.path.dirname(config_path) or ".", exist_ok=True)
         temp_path = (
             f"{config_path}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -282,8 +319,14 @@ class TeraboxClicker:
             with open(temp_path, "w", encoding="utf-8", newline="\n") as file:
                 json.dump(config, file, ensure_ascii=False, indent=4)
                 file.flush()
-                os.fsync(file.fileno())
+                if do_fsync:
+                    os.fsync(file.fileno())
             os.replace(temp_path, config_path)
+            cls._config_cache[config_path] = dict(config)
+            try:
+                cls._config_cache_mtime[config_path] = os.path.getmtime(config_path)
+            except OSError:
+                cls._config_cache_mtime.pop(config_path, None)
         finally:
             if os.path.exists(temp_path):
                 try:
@@ -413,6 +456,11 @@ class TeraboxClicker:
             self.double_click_interval,
             minimum=0.01,
         )
+        self.post_action_delay = self._safe_number(
+            source.get("post_action_delay", getattr(self, "post_action_delay", DEFAULT_POST_ACTION_DELAY)),
+            getattr(self, "post_action_delay", DEFAULT_POST_ACTION_DELAY),
+            minimum=0.0,
+        )
 
         action = source.get("no_match_action")
         if action not in VALID_NO_MATCH_ACTIONS:
@@ -473,6 +521,7 @@ class TeraboxClicker:
         actions_key,
         offsets_key,
         delays_key,
+        delay_types_key,
         directory,
     ):
         current_files = self._list_template_files(directory)
@@ -486,6 +535,7 @@ class TeraboxClicker:
             raw_actions = {}
         raw_offsets = self._safe_offsets(config.get(offsets_key, {}))
         raw_delays = self._safe_delays(config.get(delays_key, {}))
+        raw_delay_types = self._safe_delay_types(config.get(delay_types_key, {}))
 
         path_key = os.path.abspath(self.config_path)
         with self._config_lock:
@@ -518,7 +568,11 @@ class TeraboxClicker:
             filename: self._safe_number(raw_delays.get(filename, 0.0), 0.0, minimum=0.0)
             for filename in order
         }
-        return order, counts, actions, offsets, delays
+        delay_types = {
+            filename: raw_delay_types.get(filename, "pre")
+            for filename in order
+        }
+        return order, counts, actions, offsets, delays, delay_types
 
     def load_config(self):
         """Load validated per-instance settings and synchronize template folders."""
@@ -554,6 +608,7 @@ class TeraboxClicker:
             self.template_actions,
             self.template_offsets,
             self.template_delays,
+            self.template_delay_types,
         ) = self._sync_template_collection(
             config,
             "template_order",
@@ -561,6 +616,7 @@ class TeraboxClicker:
             "template_actions",
             "template_offsets",
             "template_delays",
+            "template_delay_types",
             self.template_dir,
         )
         (
@@ -569,6 +625,7 @@ class TeraboxClicker:
             self.fallback_template_actions,
             self.fallback_template_offsets,
             self.fallback_template_delays,
+            self.fallback_template_delay_types,
         ) = self._sync_template_collection(
             config,
             "fallback_template_order",
@@ -576,6 +633,7 @@ class TeraboxClicker:
             "fallback_template_actions",
             "fallback_template_offsets",
             "fallback_template_delays",
+            "fallback_template_delay_types",
             self.fallback_template_dir,
         )
 
@@ -594,6 +652,7 @@ class TeraboxClicker:
             "enable_random_click": self.enable_random_click,
             "random_click_interval": self.random_click_interval,
             "double_click_interval": self.double_click_interval,
+            "post_action_delay": self.post_action_delay,
             "no_match_action": self.no_match_action,
             "no_match_interval": self.no_match_interval,
             "no_match_coords": list(self.no_match_coords),
@@ -636,11 +695,13 @@ class TeraboxClicker:
                             "template_actions",
                             "template_offsets",
                             "template_delays",
+                            "template_delay_types",
                             self.template_order,
                             self.template_counts,
                             self.template_actions,
                             self.template_offsets,
                             self.template_delays,
+                            self.template_delay_types,
                         ),
                         (
                             "fallback_template_order",
@@ -648,11 +709,13 @@ class TeraboxClicker:
                             "fallback_template_actions",
                             "fallback_template_offsets",
                             "fallback_template_delays",
+                            "fallback_template_delay_types",
                             self.fallback_template_order,
                             self.fallback_template_counts,
                             self.fallback_template_actions,
                             self.fallback_template_offsets,
                             self.fallback_template_delays,
+                            self.fallback_template_delay_types,
                         ),
                     )
                     path_key = os.path.abspath(self.config_path)
@@ -662,11 +725,13 @@ class TeraboxClicker:
                         actions_key,
                         offsets_key,
                         delays_key,
+                        delay_types_key,
                         order,
                         counts,
                         actions,
                         offsets,
                         delays,
+                        delay_types,
                     ) in template_groups:
                         live_counts = self._live_counts[path_key][counts_key]
                         clean_counts = {
@@ -693,18 +758,101 @@ class TeraboxClicker:
                             for filename in order
                             if filename in delays and delays.get(filename, 0.0) > 0
                         }
+                        config[delay_types_key] = {
+                            filename: delay_types.get(filename, "pre")
+                            for filename in order
+                            if filename in delays
+                            and delays.get(filename, 0.0) > 0
+                            and delay_types.get(filename, "pre") == "post"
+                        }
 
-                self._atomic_write_config_unlocked(self.config_path, config)
+                self._atomic_write_config_unlocked(self.config_path, config, do_fsync=False)
                 return True
             except (OSError, ValueError, json.JSONDecodeError) as error:
                 self.log(f"설정 저장 중 오류: {error}")
                 return False
 
     @classmethod
+    def preload_templates(cls, directories=None, grayscales=(False, True)):
+        """Preload all template images from directories into global memory cache."""
+        if directories is None:
+            directories = [
+                os.path.join(APP_DIR, TEMPLATE_DIR_NAME),
+                os.path.join(APP_DIR, FALLBACK_TEMPLATE_DIR_NAME),
+            ]
+        elif isinstance(directories, (str, bytes, os.PathLike)):
+            directories = [directories]
+
+        valid_dirs = []
+        for d in directories:
+            abs_d = os.path.abspath(d)
+            if os.path.isdir(abs_d) and abs_d not in valid_dirs:
+                valid_dirs.append(abs_d)
+
+        loaded_count = 0
+        for directory in valid_dirs:
+            try:
+                for entry in os.scandir(directory):
+                    if entry.is_file() and entry.name.lower().endswith(
+                        (".png", ".jpg", ".jpeg", ".bmp", ".webp")
+                    ):
+                        abs_path = os.path.abspath(entry.path)
+                        for gray in grayscales:
+                            cache_key = (abs_path, bool(gray))
+                            with cls._template_cache_lock:
+                                if cache_key in cls._template_cache:
+                                    continue
+                            cls._load_template_direct(abs_path, grayscale=gray)
+                            loaded_count += 1
+            except OSError:
+                pass
+        return loaded_count
+
+    @classmethod
+    def _load_template_direct(cls, absolute_path, grayscale=False):
+        """Decode template image from disk and store in global memory cache."""
+        try:
+            stat = os.stat(absolute_path)
+            signature = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            cls.invalidate_template_cache(absolute_path)
+            return None, None
+
+        use_grayscale = bool(grayscale)
+        cache_key = (absolute_path, use_grayscale)
+        try:
+            encoded = np.fromfile(absolute_path, dtype=np.uint8)
+            read_flag = cv2.IMREAD_GRAYSCALE if use_grayscale else cv2.IMREAD_COLOR
+            template = cv2.imdecode(encoded, read_flag)
+            if (
+                template is None
+                or template.size == 0
+                or template.shape[0] <= 0
+                or template.shape[1] <= 0
+            ):
+                raise ValueError("이미지 디코딩 결과가 비어 있습니다.")
+            method = (
+                cv2.TM_SQDIFF_NORMED
+                if float(template.std()) < 1e-6
+                else cv2.TM_CCOEFF_NORMED
+            )
+        except Exception:
+            template, method = None, None
+
+        with cls._template_cache_lock:
+            cls._template_cache[cache_key] = (
+                signature,
+                template,
+                method,
+            )
+        return template, method
+
+    @classmethod
     def invalidate_template_cache(cls, template_path=None):
         with cls._template_cache_lock:
             if template_path is None:
                 cls._template_cache.clear()
+                cls._scaled_template_cache.clear()
             else:
                 absolute_path = os.path.abspath(template_path)
                 for cache_key in tuple(cls._template_cache):
@@ -713,6 +861,7 @@ class TeraboxClicker:
                     )
                     if cached_path == absolute_path:
                         cls._template_cache.pop(cache_key, None)
+                        cls._scaled_template_cache.pop(cache_key, None)
 
     def _remove_count_state(self, filename, counts_key):
         path_key = os.path.abspath(self.config_path)
@@ -721,7 +870,7 @@ class TeraboxClicker:
             self._live_counts[path_key][counts_key].pop(filename, None)
 
     def _delete_template(
-        self, filename, directory, order, counts, actions, offsets, delays, counts_key
+        self, filename, directory, order, counts, actions, offsets, delays, delay_types, counts_key
     ):
         if not isinstance(filename, str) or os.path.basename(filename) != filename:
             self.log(f"잘못된 템플릿 파일명: {filename}")
@@ -738,6 +887,7 @@ class TeraboxClicker:
             actions.pop(filename, None)
             offsets.pop(filename, None)
             delays.pop(filename, None)
+            delay_types.pop(filename, None)
             self._remove_count_state(filename, counts_key)
             self.invalidate_template_cache(file_path)
             return self.save_config(include_templates=True)
@@ -754,6 +904,7 @@ class TeraboxClicker:
             self.template_actions,
             self.template_offsets,
             self.template_delays,
+            self.template_delay_types,
             "template_counts",
         )
 
@@ -766,6 +917,7 @@ class TeraboxClicker:
             self.fallback_template_actions,
             self.fallback_template_offsets,
             self.fallback_template_delays,
+            self.fallback_template_delay_types,
             "fallback_template_counts",
         )
 
@@ -824,17 +976,19 @@ class TeraboxClicker:
         self.save_config(include_templates=True)
         return self.fallback_template_actions[filename]
 
-    def set_template_delay(self, filename, delay):
+    def set_template_delay(self, filename, delay, delay_type="pre"):
         safe_delay = self._safe_number(delay, 0.0, minimum=0.0)
         self.template_delays[filename] = safe_delay
+        self.template_delay_types[filename] = "post" if delay_type == "post" else "pre"
         self.save_config(include_templates=True)
-        return safe_delay
+        return safe_delay, self.template_delay_types[filename]
 
-    def set_fallback_template_delay(self, filename, delay):
+    def set_fallback_template_delay(self, filename, delay, delay_type="pre"):
         safe_delay = self._safe_number(delay, 0.0, minimum=0.0)
         self.fallback_template_delays[filename] = safe_delay
+        self.fallback_template_delay_types[filename] = "post" if delay_type == "post" else "pre"
         self.save_config(include_templates=True)
-        return safe_delay
+        return safe_delay, self.fallback_template_delay_types[filename]
 
     def _record_match(self, filename, is_fallback=False):
         counts_key = (
@@ -903,7 +1057,7 @@ class TeraboxClicker:
         time.sleep(seconds)
         return True
 
-    def _try_fallback_templates(self, screen, now):
+    def _try_fallback_templates(self, screen, now, _prescaled_screen=None):
         for filename in tuple(self.fallback_template_order):
             if self.is_running and self._stop_event.is_set():
                 return False
@@ -914,6 +1068,7 @@ class TeraboxClicker:
                 threshold=self.similarity_threshold,
                 filename=filename,
                 offsets_dict=self.fallback_template_offsets,
+                _prescaled_screen=_prescaled_screen,
             )
             if match is None:
                 continue
@@ -921,14 +1076,17 @@ class TeraboxClicker:
             x, y, confidence = match
             action = self.fallback_template_actions.get(filename, "click")
             delay = self.fallback_template_delays.get(filename, 0.0)
+            delay_type = self.fallback_template_delay_types.get(filename, "pre")
             self.last_match_time = now
-            if delay > 0:
+
+            if delay > 0 and delay_type == "pre":
                 self.log(
                     f"⚡ [미매칭 복구] 매칭 성공: {filename} (유사도: {confidence:.2f}) "
-                    f"-> 지연 시간 {delay:g}초 대기 중..."
+                    f"-> [동작 전] {delay:g}초 대기 중..."
                 )
                 if not self._wait_after_action(delay):
                     return False
+
             success = self._execute_action(action, x, y)
             self.log(
                 f"⚡ [미매칭 복구] 액션 완료: {filename} "
@@ -939,11 +1097,18 @@ class TeraboxClicker:
                 self.last_random_click_time = time.monotonic()
                 self._timeout_alert_active = False
                 self._record_match(filename, is_fallback=True)
-            self._wait_after_action(2.0)
+
+            post_wait = delay if (delay > 0 and delay_type == "post") else self.post_action_delay
+            if post_wait > 0:
+                if delay > 0 and delay_type == "post":
+                    self.log(
+                        f"⚡ [미매칭 복구: {filename}] [동작 후] 다음 매칭 전 {post_wait:g}초 대기 중..."
+                    )
+                self._wait_after_action(post_wait)
             return True
         return False
 
-    def _handle_no_match_action(self, screen, now):
+    def _handle_no_match_action(self, screen, now, _prescaled_screen=None):
         if self.no_match_action == "none" or self.no_match_interval <= 0:
             return
 
@@ -964,7 +1129,7 @@ class TeraboxClicker:
                     f"⚡ [미매칭 복구] 매칭 없음 ({int(elapsed_since_match)}초 경과) "
                     f"-> 미매칭 복구 템플릿({count}개) 검사 시도"
                 )
-                matched = self._try_fallback_templates(screen, now)
+                matched = self._try_fallback_templates(screen, now, _prescaled_screen=_prescaled_screen)
             else:
                 self.log(
                     f"⚡ [미매칭 복구] {int(elapsed_since_match)}초 경과 (등록된 미매칭 템플릿 없음)"
@@ -975,8 +1140,8 @@ class TeraboxClicker:
                 if final_action != "none":
                     success = self._execute_final_action(screen, final_action)
                     self.last_random_click_time = time.monotonic()
-                    if success:
-                        self._wait_after_action(1.0)
+                    if success and self.post_action_delay > 0:
+                        self._wait_after_action(self.post_action_delay)
                 else:
                     self.log(
                         "⚡ [미매칭 복구] 일치하는 미매칭 템플릿 없음 "
@@ -1025,7 +1190,8 @@ class TeraboxClicker:
 
         if success:
             self.last_random_click_time = time.monotonic()
-            self._wait_after_action(1.0)
+            if self.post_action_delay > 0:
+                self._wait_after_action(self.post_action_delay)
 
     def _execute_final_action(self, screen, final_action):
         height, width = screen.shape[:2]
@@ -1073,6 +1239,14 @@ class TeraboxClicker:
 
         if self.match_grayscale and screen.ndim == 3:
             screen = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+
+        # Pre-compute downscaled screen once for all templates
+        prescaled = cv2.resize(
+            screen, None,
+            fx=PRESCALE_FACTOR, fy=PRESCALE_FACTOR,
+            interpolation=cv2.INTER_AREA,
+        )
+
         now = time.monotonic()
         for filename in tuple(self.template_order):
             if self.is_running and self._stop_event.is_set():
@@ -1083,6 +1257,7 @@ class TeraboxClicker:
                 template_path,
                 threshold=self.similarity_threshold,
                 filename=filename,
+                _prescaled_screen=prescaled,
             )
             if match is None:
                 continue
@@ -1090,14 +1265,17 @@ class TeraboxClicker:
             x, y, confidence = match
             action = self.template_actions.get(filename, "click")
             delay = self.template_delays.get(filename, 0.0)
+            delay_type = self.template_delay_types.get(filename, "pre")
             self.last_match_time = now
-            if delay > 0:
+
+            if delay > 0 and delay_type == "pre":
                 self.log(
                     f"매칭 성공: {filename} (유사도: {confidence:.2f}) "
-                    f"-> 지연 시간 {delay:g}초 대기 중..."
+                    f"-> [동작 전] {delay:g}초 대기 중..."
                 )
                 if not self._wait_after_action(delay):
                     return False
+
             success = self._execute_action(action, x, y)
             self.log(
                 f"액션 완료: {filename} "
@@ -1108,10 +1286,17 @@ class TeraboxClicker:
                 self.last_random_click_time = time.monotonic()
                 self._timeout_alert_active = False
                 self._record_match(filename)
-            self._wait_after_action(2.0)
+
+            post_wait = delay if (delay > 0 and delay_type == "post") else self.post_action_delay
+            if post_wait > 0:
+                if delay > 0 and delay_type == "post":
+                    self.log(
+                        f"⏱️ [{filename}] [동작 후] 다음 매칭 전 {post_wait:g}초 대기 중..."
+                    )
+                self._wait_after_action(post_wait)
             return True
 
-        self._handle_no_match_action(screen, now)
+        self._handle_no_match_action(screen, now, _prescaled_screen=prescaled)
         return False
 
     def execute_template(self, filename, is_fallback=False):
@@ -1170,11 +1355,18 @@ class TeraboxClicker:
         x, y, confidence = match
         action = actions_dict.get(filename, "click")
         delay = delays_dict.get(filename, 0.0)
+        delay_types_dict = (
+            self.fallback_template_delay_types
+            if is_fallback
+            else self.template_delay_types
+        )
+        delay_type = delay_types_dict.get(filename, "pre")
         now = time.monotonic()
         self.last_match_time = now
-        if delay > 0:
+
+        if delay > 0 and delay_type == "pre":
             self.log(
-                f"{prefix} '{filename}' 매칭 성공 -> 지연 시간 {delay:g}초 대기 중..."
+                f"{prefix} '{filename}' 매칭 성공 -> [동작 전] {delay:g}초 대기 중..."
             )
             if not self._wait_after_action(delay):
                 return False
@@ -1187,6 +1379,11 @@ class TeraboxClicker:
             self.last_action_time = time.monotonic()
             self.last_random_click_time = time.monotonic()
             self._record_match(filename, is_fallback=is_fallback)
+            if delay > 0 and delay_type == "post":
+                self.log(
+                    f"{prefix} '{filename}' [동작 후] {delay:g}초 대기 중..."
+                )
+                self._wait_after_action(delay)
         return success
 
     @staticmethod
@@ -1362,7 +1559,7 @@ class TeraboxClicker:
             self.client = None
 
     def capture_screen(self, grayscale=None):
-        """Capture and decode the current device screen."""
+        """Capture screen via subprocess exec-out screencap -p (faster than ppadb)."""
         if self.device is None and not self.start_adb_server():
             return None
 
@@ -1372,13 +1569,25 @@ class TeraboxClicker:
             return None
 
         try:
-            result = device.screencap()
-            if not result:
-                return None
+            proc = subprocess.run(
+                [self.adb_path, "-s", self.device_address,
+                 "exec-out", "screencap", "-p"],
+                capture_output=True,
+                timeout=ADB_COMMAND_TIMEOUT,
+                **self._subprocess_kwargs(),
+            )
+            if proc.returncode != 0 or not proc.stdout:
+                # Fallback to ppadb screencap if exec-out fails
+                result = device.screencap()
+                if not result:
+                    return None
+                raw = result
+            else:
+                raw = proc.stdout
             use_gray = self.match_grayscale if grayscale is None else bool(grayscale)
             read_flag = cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR
             image = cv2.imdecode(
-                np.frombuffer(result, dtype=np.uint8), read_flag
+                np.frombuffer(raw, dtype=np.uint8), read_flag
             )
             if image is None:
                 self.log("화면 캡처 이미지 디코딩 실패")
@@ -1396,40 +1605,36 @@ class TeraboxClicker:
             self.match_grayscale if grayscale is None else bool(grayscale)
         )
         cache_key = (absolute_path, use_grayscale)
-        try:
-            stat = os.stat(absolute_path)
-            signature = (stat.st_mtime_ns, stat.st_size)
-        except OSError:
-            self.invalidate_template_cache(absolute_path)
-            return None, None
 
-        with self._template_cache_lock:
-            cached = self._template_cache.get(cache_key)
-            if cached and cached[0] == signature:
-                return cached[1], cached[2]
+        # 1. Fast Lock-Free Read from global preloaded cache
+        cached = self._template_cache.get(cache_key)
+        if cached is not None:
+            return cached[1], cached[2]
 
-        try:
-            encoded = np.fromfile(absolute_path, dtype=np.uint8)
-            read_flag = cv2.IMREAD_GRAYSCALE if use_grayscale else cv2.IMREAD_COLOR
-            template = cv2.imdecode(encoded, read_flag)
-            if template is None or template.size == 0 or template.shape[0] <= 0 or template.shape[1] <= 0:
-                raise ValueError("이미지 디코딩 결과가 비어 있습니다.")
-            method = (
-                cv2.TM_SQDIFF_NORMED
-                if float(template.std()) < 1e-6
-                else cv2.TM_CCOEFF_NORMED
-            )
-        except Exception as error:
-            self.log(f"템플릿 로드 실패 ({template_path}): {error}")
-            template, method = None, None
-
-        with self._template_cache_lock:
-            self._template_cache[cache_key] = (
-                signature,
-                template,
-                method,
-            )
+        # 2. If not cached, load and decode on demand
+        template, method = self._load_template_direct(
+            absolute_path, grayscale=use_grayscale
+        )
+        if template is None:
+            self.log(f"템플릿 로드 실패 ({template_path})")
         return template, method
+
+    def _get_scaled_template(self, cache_key, template):
+        """Return a downscaled template for pre-filter matching, cached."""
+        scaled = self._scaled_template_cache.get(cache_key)
+        if scaled is not None:
+            return scaled
+        h, w = template.shape[:2]
+        if h < PRESCALE_MIN_TEMPLATE_DIM or w < PRESCALE_MIN_TEMPLATE_DIM:
+            self._scaled_template_cache[cache_key] = None
+            return None
+        small = cv2.resize(
+            template, None,
+            fx=PRESCALE_FACTOR, fy=PRESCALE_FACTOR,
+            interpolation=cv2.INTER_AREA,
+        )
+        self._scaled_template_cache[cache_key] = small
+        return small
 
     def find_template(
         self,
@@ -1438,8 +1643,9 @@ class TeraboxClicker:
         threshold=None,
         filename=None,
         offsets_dict=None,
+        _prescaled_screen=None,
     ):
-        """Find a cached template and return a screen-clamped click coordinate."""
+        """Find a cached template using 2-stage matching (downscale pre-filter + full-res)."""
         if screen_img is None or not isinstance(screen_img, np.ndarray):
             return None
         use_grayscale = bool(self.match_grayscale)
@@ -1460,13 +1666,43 @@ class TeraboxClicker:
         template, method = self._load_template(template_path, grayscale=use_grayscale)
         if template is None:
             return None
-        if (
-            screen_img.shape[0] < template.shape[0]
-            or screen_img.shape[1] < template.shape[1]
-        ):
+        th, tw = template.shape[:2]
+        sh, sw = screen_img.shape[:2]
+        if sh < th or sw < tw:
             return None
 
         try:
+            # Stage 1: Downscaled pre-filter (skip for small templates)
+            use_prescale = (
+                th >= PRESCALE_MIN_TEMPLATE_DIM
+                and tw >= PRESCALE_MIN_TEMPLATE_DIM
+            )
+            if use_prescale:
+                abs_path = os.path.abspath(template_path)
+                scale_key = (abs_path, use_grayscale)
+                small_tmpl = self._get_scaled_template(scale_key, template)
+                if small_tmpl is not None:
+                    if _prescaled_screen is None:
+                        _prescaled_screen = cv2.resize(
+                            screen_img, None,
+                            fx=PRESCALE_FACTOR, fy=PRESCALE_FACTOR,
+                            interpolation=cv2.INTER_AREA,
+                        )
+                    sth, stw = small_tmpl.shape[:2]
+                    if _prescaled_screen.shape[0] >= sth and _prescaled_screen.shape[1] >= stw:
+                        pre_result = cv2.matchTemplate(
+                            _prescaled_screen, small_tmpl, method
+                        )
+                        pre_min, pre_max, pre_min_loc, pre_max_loc = cv2.minMaxLoc(pre_result)
+                        if method == cv2.TM_SQDIFF_NORMED:
+                            pre_conf = 1.0 - pre_min
+                        else:
+                            pre_conf = pre_max
+                        pre_threshold = max(0.0, threshold * 0.8)
+                        if not math.isfinite(pre_conf) or pre_conf < pre_threshold:
+                            return None
+
+            # Stage 2: Full-resolution matching
             result = cv2.matchTemplate(screen_img, template, method)
             min_value, max_value, min_location, max_location = cv2.minMaxLoc(
                 result
@@ -1566,6 +1802,7 @@ class TeraboxClicker:
         self.last_match_time = now
         self.last_random_click_time = now
         self._timeout_alert_active = False
+        self.preload_templates([self.template_dir, self.fallback_template_dir])
         self.log("자동 클릭커 시작")
 
         try:
