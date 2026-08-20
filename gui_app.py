@@ -837,6 +837,9 @@ class InstanceTabFrame(ctk.CTkFrame):
         self._connection_generation = 0
         self._loop_starting = False
         self._log_line_count = 1
+        self._log_buffer = []
+        self._log_flush_scheduled = False
+        self._drag_positions = []
 
         self.clicker = TeraboxClicker(
             device_address=device_address,
@@ -1174,23 +1177,36 @@ class InstanceTabFrame(ctk.CTkFrame):
     def log_message(self, message):
         if self._destroyed:
             return
+        timestamp = time.strftime("[%H:%M:%S] ")
+        self._log_buffer.append(f"{timestamp}{message}\n")
+        if "매칭 성공:" in message:
+            self.app_owner.post_to_ui(self.clear_warning_ui)
+        if not self._log_flush_scheduled:
+            self._log_flush_scheduled = True
+            self.app_owner.post_to_ui(self._flush_log_buffer)
 
-        def update_log():
-            if self._destroyed or not self.winfo_exists():
-                return
+    def _flush_log_buffer(self):
+        self._log_flush_scheduled = False
+        if self._destroyed or not self.winfo_exists():
+            self._log_buffer.clear()
+            return
+        if not self._log_buffer:
+            return
+        combined = "".join(self._log_buffer)
+        lines_count = len(self._log_buffer)
+        self._log_buffer.clear()
+
+        try:
             self.log_textbox.configure(state="normal")
-            timestamp = time.strftime("[%H:%M:%S] ")
-            self.log_textbox.insert("end", f"{timestamp}{message}\n")
-            self._log_line_count += 1
+            self.log_textbox.insert("end", combined)
+            self._log_line_count += lines_count
             if self._log_line_count > 500:
                 self.log_textbox.delete("1.0", "201.0")
                 self._log_line_count -= 200
             self.log_textbox.see("end")
             self.log_textbox.configure(state="disabled")
-            if "매칭 성공:" in message:
-                self.clear_warning_ui()
-
-        self.app_owner.post_to_ui(update_log)
+        except Exception:
+            pass
 
     def on_template_match(self, filename, count, is_fallback):
         self.clear_warning_ui()
@@ -1525,17 +1541,14 @@ class InstanceTabFrame(ctk.CTkFrame):
 
     def create_template_row(self, parent_frame, filename, index, is_fallback=False):
         row_frame = ctk.CTkFrame(parent_frame, fg_color="transparent")
-        row_frame.pack(fill="x", padx=5, pady=2)
+        row_frame.pack(fill="x", padx=5, pady=1)
 
-        # 1. 우측 고정 버튼 영역
-        btn_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
-        btn_frame.pack(side="right", padx=(5, 0))
-
+        # 1. 우측 고정 버튼 영역 (플랫 구조로 레이아웃 부하 최소화)
         del_cmd = (lambda f=filename: self.delete_fallback_template_event(f)) if is_fallback else (lambda f=filename: self.delete_template_event(f))
-        del_btn = ctk.CTkButton(btn_frame, text="X", width=28, height=25, 
+        del_btn = ctk.CTkButton(row_frame, text="X", width=28, height=25, 
                               fg_color="#8B0000", hover_color="#FF0000",
                               command=del_cmd)
-        del_btn.pack(side="right", padx=(4, 0))
+        del_btn.pack(side="right", padx=(3, 0))
 
         action_dict = self.clicker.fallback_template_actions if is_fallback else self.clicker.template_actions
         action = action_dict.get(filename, "click")
@@ -1553,10 +1566,10 @@ class InstanceTabFrame(ctk.CTkFrame):
             action_hover = "#1E8449"
         
         toggle_cmd = (lambda f=filename: self.toggle_fallback_action_event(f)) if is_fallback else (lambda f=filename: self.toggle_action_event(f))
-        action_btn = ctk.CTkButton(btn_frame, text=action_text, width=115, height=25,
+        action_btn = ctk.CTkButton(row_frame, text=action_text, width=115, height=25,
                                    fg_color=action_fg, hover_color=action_hover,
                                    command=toggle_cmd)
-        action_btn.pack(side="right", padx=(4, 0))
+        action_btn.pack(side="right", padx=(3, 0))
 
         delays_dict = self.clicker.fallback_template_delays if is_fallback else self.clicker.template_delays
         delay_types_dict = self.clicker.fallback_template_delay_types if is_fallback else self.clicker.template_delay_types
@@ -1577,22 +1590,22 @@ class InstanceTabFrame(ctk.CTkFrame):
             delay_hover = "#444444"
 
         delay_cmd = (lambda f=filename: self.set_fallback_template_delay_event(f)) if is_fallback else (lambda f=filename: self.set_template_delay_event(f))
-        delay_btn = ctk.CTkButton(btn_frame, text=delay_text, width=62, height=25,
+        delay_btn = ctk.CTkButton(row_frame, text=delay_text, width=62, height=25,
                                   fg_color=delay_fg, hover_color=delay_hover,
                                   command=delay_cmd)
-        delay_btn.pack(side="right", padx=0)
+        delay_btn.pack(side="right", padx=(3, 0))
 
         counts_dict = self.clicker.fallback_template_counts if is_fallback else self.clicker.template_counts
         count = counts_dict.get(filename, 0)
-        count_label = ctk.CTkLabel(row_frame, text=f"Clicks: {count}", width=75, text_color="gray", anchor="e")
-        count_label.pack(side="right", padx=(5, 10))
+        count_label = ctk.CTkLabel(row_frame, text=f"Clicks: {count}", width=68, text_color="gray", anchor="e", font=ctk.CTkFont(size=11))
+        count_label.pack(side="right", padx=(2, 6))
 
-        # 2. 좌측 고정 컨트롤 영역
-        drag_handle = ctk.CTkLabel(row_frame, text="☰", width=25, cursor="fleur", font=ctk.CTkFont(size=14, weight="bold"), text_color="gray")
-        drag_handle.pack(side="left", padx=(5, 0))
+        # 2. 좌측 컨트롤 영역
+        drag_handle = ctk.CTkLabel(row_frame, text="☰", width=22, cursor="fleur", font=ctk.CTkFont(size=13, weight="bold"), text_color="gray")
+        drag_handle.pack(side="left", padx=(3, 0))
 
-        priority_label = ctk.CTkLabel(row_frame, text=f"{index+1}.", width=30, anchor="w")
-        priority_label.pack(side="left", padx=(2, 5))
+        priority_label = ctk.CTkLabel(row_frame, text=f"{index+1}.", width=28, anchor="w", font=ctk.CTkFont(size=12))
+        priority_label.pack(side="left", padx=(2, 4))
 
         # 3. 중앙 가변 텍스트 라벨
         offset_dict = self.clicker.fallback_template_offsets if is_fallback else self.clicker.template_offsets
@@ -1601,8 +1614,8 @@ class InstanceTabFrame(ctk.CTkFrame):
             off_x, off_y = offset_dict[filename]
             offset_info = f"  ({off_x:+d},{off_y:+d})"
         
-        label = ctk.CTkLabel(row_frame, text=f"{filename}{offset_info}", anchor="w")
-        label.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        label = ctk.CTkLabel(row_frame, text=f"{filename}{offset_info}", anchor="w", font=ctk.CTkFont(size=12))
+        label.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
         target_dir = self.clicker.fallback_template_dir if is_fallback else self.clicker.template_dir
         template_file_path = os.path.join(target_dir, filename)
@@ -1615,13 +1628,16 @@ class InstanceTabFrame(ctk.CTkFrame):
             tooltip = TemplatePreviewTooltip.get_instance(self.winfo_toplevel())
             tooltip.cancel()
 
-        for widget in (row_frame, drag_handle, priority_label, label, count_label):
-            widget.bind("<ButtonPress-1>", lambda e, f=filename, fb=is_fallback: self.on_drag_start(e, f, fb))
-            widget.bind("<B1-Motion>", self.on_drag_motion)
-            widget.bind("<ButtonRelease-1>", self.on_drag_end)
-            widget.bind("<Double-Button-1>", lambda e, f=filename, fb=is_fallback: self.on_template_double_click(f, fb))
-            widget.bind("<Enter>", on_enter, add="+")
-            widget.bind("<Leave>", on_leave, add="+")
+        # 이벤트 바인딩 최소화 (필요한 요소에만 정밀 바인딩)
+        drag_handle.bind("<ButtonPress-1>", lambda e, f=filename, fb=is_fallback: self.on_drag_start(e, f, fb))
+        drag_handle.bind("<B1-Motion>", self.on_drag_motion)
+        drag_handle.bind("<ButtonRelease-1>", self.on_drag_end)
+
+        label.bind("<Double-Button-1>", lambda e, f=filename, fb=is_fallback: self.on_template_double_click(f, fb))
+        label.bind("<Enter>", on_enter, add="+")
+        label.bind("<Leave>", on_leave, add="+")
+
+        row_frame.bind("<Double-Button-1>", lambda e, f=filename, fb=is_fallback: self.on_template_double_click(f, fb))
 
         if is_fallback:
             self.fallback_template_row_widgets[filename] = (row_frame, priority_label, drag_handle)
@@ -1666,6 +1682,21 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.drag_target_filename = filename
         self.drag_is_fallback = is_fallback
         row_dict = self.fallback_template_row_widgets if is_fallback else self.template_row_widgets
+        order = self.clicker.fallback_template_order if is_fallback else self.clicker.template_order
+
+        # Cache row positions ONCE on drag start to eliminate winfo queries during drag motion
+        self._drag_positions = []
+        for f in order:
+            if f in row_dict:
+                frame, _, _ = row_dict[f]
+                try:
+                    if frame.winfo_exists():
+                        y = frame.winfo_rooty()
+                        h = frame.winfo_height()
+                        self._drag_positions.append((y, y + (h if h > 0 else 30), f))
+                except Exception:
+                    pass
+
         if filename in row_dict:
             frame, _, _ = row_dict[filename]
             frame.configure(fg_color="#1F6FE5")
@@ -1676,28 +1707,12 @@ class InstanceTabFrame(ctk.CTkFrame):
         
         y = event.y_root
         is_fallback = getattr(self, 'drag_is_fallback', False)
-        order = self.clicker.fallback_template_order if is_fallback else self.clicker.template_order
         row_dict = self.fallback_template_row_widgets if is_fallback else self.template_row_widgets
         
-        if self.drag_source_filename not in order:
-            return
-            
+        # Fast lookup in cached positions
         target = None
-        for f in order:
-            if f not in row_dict:
-                continue
-            frame, _, _ = row_dict[f]
-            try:
-                if not frame.winfo_exists():
-                    continue
-                child_y = frame.winfo_rooty()
-                child_h = frame.winfo_height()
-            except Exception:
-                continue
-            if child_h <= 0:
-                child_h = 35
-                
-            if child_y <= y <= child_y + child_h:
+        for y_start, y_end, f in getattr(self, '_drag_positions', []):
+            if y_start <= y <= y_end:
                 target = f
                 break
 
@@ -1724,6 +1739,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.drag_source_filename = None
         self.drag_target_filename = None
         self.drag_is_fallback = False
+        self._drag_positions = []
 
         if src and src in row_dict:
             row_dict[src][0].configure(fg_color="transparent")
