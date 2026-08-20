@@ -853,6 +853,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         # --- Top Header Bar inside Tab ---
         self.header_frame = ctk.CTkFrame(self)
         self.header_frame.pack(fill="x", padx=10, pady=(10, 5))
+        self.normal_header_fg = self.header_frame.cget("fg_color")
 
         # Device Address Selector
         self.device_addr_label = ctk.CTkLabel(self.header_frame, text="Device:", font=ctk.CTkFont(weight="bold"))
@@ -1209,7 +1210,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             pass
 
     def on_template_match(self, filename, count, is_fallback):
-        self.clear_warning_ui()
+        self.app_owner.post_to_ui(self.clear_warning_ui)
         self.app_owner.post_to_ui(
             lambda: self.app_owner.update_template_count_for_all(
                 filename, count, is_fallback
@@ -1251,13 +1252,25 @@ class InstanceTabFrame(ctk.CTkFrame):
     def clear_warning_ui(self):
         self._alert_shown_for_current_timeout = False
         self._set_tab_warning_state(False)
-        if hasattr(self, "normal_header_fg"):
+        if hasattr(self, "normal_header_fg") and self.header_frame.winfo_exists():
             self.header_frame.configure(fg_color=self.normal_header_fg)
-        if self.clicker.is_running and self.clicker.device:
+        if self.clicker.is_running and self.clicker.device and self.status_label.winfo_exists():
             self.status_label.configure(
                 text=f"Status: Running ({self.clicker.device_address})",
                 text_color="green",
             )
+
+    def check_tab_warning_status(self):
+        if self._destroyed:
+            return
+        if not self.clicker.is_running or self.clicker.no_match_timeout <= 0:
+            self._set_tab_warning_state(False)
+            return
+        elapsed = time.monotonic() - self.clicker.last_match_time
+        if elapsed >= self.clicker.no_match_timeout:
+            self._set_tab_warning_state(True)
+        else:
+            self._set_tab_warning_state(False)
 
     def update_timer_display(self):
         if self._destroyed or not self.winfo_exists():
@@ -1339,8 +1352,10 @@ class InstanceTabFrame(ctk.CTkFrame):
                     text_color="#FF4D4D"
                 )
             else:
-                if not self._alert_shown_for_current_timeout:
-                    self._set_tab_warning_state(False)
+                self._alert_shown_for_current_timeout = False
+                self._set_tab_warning_state(False)
+                if hasattr(self, "normal_header_fg") and self.header_frame.cget("fg_color") != self.normal_header_fg:
+                    self.header_frame.configure(fg_color=self.normal_header_fg)
                 color = "#F39C12" if timeout_rem < 15 else "#D5D8DC"
                 self.timeout_timer_label.configure(
                     text=f"⚠️ 매칭없음 경고: {timeout_rem:.1f}초 남음 ({timeout_elp:.1f}/{timeout:.0f}s)",
@@ -2325,18 +2340,19 @@ class App(ctk.CTk):
     def _pump_timer_updates(self):
         if self._closing:
             return
-        # Only update the currently visible tab for efficiency
         try:
             current_tab = self.tabview.get()
         except Exception:
             current_tab = None
-        if current_tab:
-            frame = self.tab_frames.get(current_tab)
-            if frame:
-                try:
+
+        for name, frame in tuple(self.tab_frames.items()):
+            try:
+                if name == current_tab:
                     frame.update_timer_display()
-                except Exception:
-                    pass
+                else:
+                    frame.check_tab_warning_status()
+            except Exception:
+                pass
         self._timer_pump_id = self.after(500, self._pump_timer_updates)
 
     def load_and_initialize_tabs(self):
