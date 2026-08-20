@@ -1200,9 +1200,9 @@ class InstanceTabFrame(ctk.CTkFrame):
             self.log_textbox.configure(state="normal")
             self.log_textbox.insert("end", combined)
             self._log_line_count += lines_count
-            if self._log_line_count > 500:
-                self.log_textbox.delete("1.0", "201.0")
-                self._log_line_count -= 200
+            if self._log_line_count > 150:
+                self.log_textbox.delete("1.0", "51.0")
+                self._log_line_count -= 50
             self.log_textbox.see("end")
             self.log_textbox.configure(state="disabled")
         except Exception:
