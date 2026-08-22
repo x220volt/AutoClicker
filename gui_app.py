@@ -7,9 +7,9 @@ import time
 import cv2
 import numpy as np
 import queue
-from main import TeraboxClicker, CONFIG_PATH
+from main import TeraboxClicker, CONFIG_PATH, ADB_COMMAND_TIMEOUT
 
-VERSION = "v0.3.5"
+VERSION = "v0.3.6"
 
 # 앱 전역 테마를 Dark 모드로 고정
 ctk.set_appearance_mode("Dark")
@@ -23,6 +23,47 @@ NO_MATCH_ACTION_MAP = {
     "back": "↩️ 뒤로가기 (Back Key)"
 }
 REVERSE_NO_MATCH_ACTION_MAP = {v: k for k, v in NO_MATCH_ACTION_MAP.items()}
+
+
+def get_action_button_style(action):
+    if action == "back":
+        return "Back (뒤로가기)", "#E67E22", "#D35400"
+    elif action in ("double_click", "click_click", "double"):
+        return "Double (클릭클릭)", "#2980B9", "#1F618D"
+    else:
+        return "Click (클릭)", "#27AE60", "#1E8449"
+
+
+def get_delay_button_style(delay, delay_type="pre"):
+    if delay > 0:
+        if delay_type == "post":
+            return f"⏱️후 {delay:g}s", "#1A5276", "#2471A3"
+        else:
+            return f"⏱️전 {delay:g}s", "#7D6608", "#9A7D0A"
+    else:
+        return "⏱️ 0s", "#333333", "#444444"
+
+
+class TemplateRowWidgets:
+    """Container for widgets in a template row, maintaining backward-compatible indexing."""
+    def __init__(self, frame, priority, drag, action_btn, delay_btn, count_label, label, del_btn):
+        self.frame = frame
+        self.priority = priority
+        self.drag = drag
+        self.action_btn = action_btn
+        self.delay_btn = delay_btn
+        self.count_label = count_label
+        self.label = label
+        self.del_btn = del_btn
+
+    def __getitem__(self, index):
+        if index == 0:
+            return self.frame
+        elif index == 1:
+            return self.priority
+        elif index == 2:
+            return self.drag
+        raise IndexError(f"Index {index} out of range for TemplateRowWidgets")
 
 
 class TemplatePreviewTooltip:
@@ -190,7 +231,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.parent_frame = parent_frame
         self.clicker = parent_frame.clicker
         self._save_after_id = None
-        self.title(f"Settings - {self.clicker.device_address}")
+        self.title("Settings (공통 설정)")
         self.geometry("440x780")
         self.resizable(False, False)
         
@@ -199,7 +240,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.grab_set()
 
         # Header
-        self.header_label = ctk.CTkLabel(self, text=f"⚙️ Settings ({self.clicker.device_address})", font=ctk.CTkFont(size=16, weight="bold"))
+        self.header_label = ctk.CTkLabel(self, text="⚙️ 공통 설정 (Global Settings)", font=ctk.CTkFont(size=16, weight="bold"))
         self.header_label.pack(pady=(15, 10))
 
         # Scan Interval
@@ -256,9 +297,18 @@ class SettingsWindow(ctk.CTkToplevel):
         self.timeout_label.pack(fill="x", padx=30)
         self.timeout_entry = ctk.CTkEntry(self)
         self.timeout_entry.insert(0, str(self.clicker.no_match_timeout))
-        self.timeout_entry.pack(fill="x", padx=30, pady=(0, 10))
+        self.timeout_entry.pack(fill="x", padx=30, pady=(0, 8))
         self.timeout_entry.bind("<KeyRelease>", self.schedule_save)
         self.timeout_entry.bind("<FocusOut>", lambda e: self.save_settings())
+
+        # Consecutive Match Alert
+        self.consecutive_label = ctk.CTkLabel(self, text="동일 템플릿 연속 매칭 경고 횟수 (0: 끄기):", anchor="w")
+        self.consecutive_label.pack(fill="x", padx=30)
+        self.consecutive_entry = ctk.CTkEntry(self)
+        self.consecutive_entry.insert(0, str(getattr(self.clicker, 'consecutive_match_threshold', 0)))
+        self.consecutive_entry.pack(fill="x", padx=30, pady=(0, 10))
+        self.consecutive_entry.bind("<KeyRelease>", self.schedule_save)
+        self.consecutive_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
         # --- No-Match Action Section ---
         self.no_match_section_label = ctk.CTkLabel(self, text="⚡ 매칭 미발생 시 자동 동작 (No-Match Action):", anchor="w", font=ctk.CTkFont(weight="bold"))
@@ -468,6 +518,13 @@ class SettingsWindow(ctk.CTkToplevel):
         except ValueError:
             pass
 
+        try:
+            value = int(float(self.consecutive_entry.get().strip()))
+            if value >= 0:
+                self.clicker.consecutive_match_threshold = value
+        except ValueError:
+            pass
+
         action_key = REVERSE_NO_MATCH_ACTION_MAP.get(self.no_match_combo.get(), "none")
         self.clicker.no_match_action = action_key
         self.clicker.enable_random_click = action_key == "random_click"
@@ -489,6 +546,8 @@ class SettingsWindow(ctk.CTkToplevel):
         except ValueError:
             pass
 
+        self.parent_frame.app_owner.sync_shared_settings_to_all(self.parent_frame)
+
     def schedule_save(self, event=None):
         self._apply_form_values()
         if self._save_after_id is not None:
@@ -497,7 +556,6 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def _persist_settings(self):
         self._save_after_id = None
-        self.clicker.save_config(include_templates=False)
         self.parent_frame.app_owner.save_app_config()
 
     def save_settings(self, event=None):
@@ -507,6 +565,17 @@ class SettingsWindow(ctk.CTkToplevel):
             self._save_after_id = None
         self._persist_settings()
 
+    def close_window(self):
+        if self._save_after_id is not None:
+            self.after_cancel(self._save_after_id)
+            self._save_after_id = None
+        self._apply_form_values()
+        self._persist_settings()
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
 class TemplateDelayWindow(ctk.CTkToplevel):
     """Dialog for setting pre-action or post-action delay for a template."""
     def __init__(self, parent_frame, filename, is_fallback=False):
@@ -685,7 +754,9 @@ class TemplateDelayWindow(ctk.CTkToplevel):
         self.parent_frame.log_message(
             f"⏱️ [{self.filename}] 지연 시간: {delay_sec:g}초 ({timing_name} 대기) 설정 완료"
         )
-        self.parent_frame.app_owner.refresh_all_tabs_templates()
+        self.parent_frame.app_owner.update_all_template_delays(
+            self.filename, delay_sec, delay_type, is_fallback=self.is_fallback
+        )
         self.close_window()
 
     def close_window(self):
@@ -834,18 +905,25 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.is_alert_open = False
         self._alert_shown_for_current_timeout = False
         self._destroyed = False
+        self._shutdown_started = False
         self._connection_generation = 0
         self._loop_starting = False
+        self._loop_generation = 0
+        self._loop_cancel_event = threading.Event()
+        self._action_threads = set()
+        self._action_threads_lock = threading.Lock()
         self._log_line_count = 1
         self._log_buffer = []
         self._log_flush_scheduled = False
         self._drag_positions = []
+        self._timer_render_state = {}
 
         self.clicker = TeraboxClicker(
             device_address=device_address,
             on_timeout_callback=self.on_no_match_timeout,
             logger=self.log_message,
             on_match_callback=self.on_template_match,
+            on_consecutive_match_callback=self.on_consecutive_match_warning,
         )
         self.clicker_thread = None
         self.settings_window = None
@@ -1180,8 +1258,6 @@ class InstanceTabFrame(ctk.CTkFrame):
             return
         timestamp = time.strftime("[%H:%M:%S] ")
         self._log_buffer.append(f"{timestamp}{message}\n")
-        if "매칭 성공:" in message:
-            self.app_owner.post_to_ui(self.clear_warning_ui)
         if not self._log_flush_scheduled:
             self._log_flush_scheduled = True
             self.app_owner.post_to_ui(self._flush_log_buffer)
@@ -1228,24 +1304,33 @@ class InstanceTabFrame(ctk.CTkFrame):
             if not btn or not btn.winfo_exists():
                 return
 
+            if not hasattr(self, "_tab_button_defaults"):
+                self._tab_button_defaults = {
+                    "text_color": btn.cget("text_color"),
+                    "border_color": btn.cget("border_color"),
+                    "border_width": btn.cget("border_width"),
+                }
+
             if is_warning:
                 current_text = str(btn.cget("text"))
                 if not current_text.startswith("⚠️"):
                     btn.configure(
                         text=f"⚠️ {self.tab_name}",
                         text_color="#FF4D4D",
-                        border_width=2,
                         border_color="#FF4D4D",
                     )
             else:
                 current_text = str(btn.cget("text"))
-                if current_text != self.tab_name or btn.cget("border_width") != 0:
+                defaults = getattr(self, "_tab_button_defaults", None)
+                if defaults:
                     btn.configure(
                         text=self.tab_name,
-                        text_color=["#DCE4EE", "#DCE4EE"],
-                        border_width=0,
-                        border_color="transparent",
+                        text_color=defaults["text_color"],
+                        border_color=defaults["border_color"],
+                        border_width=defaults["border_width"],
                     )
+                else:
+                    btn.configure(text=self.tab_name)
         except Exception:
             pass
 
@@ -1266,11 +1351,20 @@ class InstanceTabFrame(ctk.CTkFrame):
         if not self.clicker.is_running or self.clicker.no_match_timeout <= 0:
             self._set_tab_warning_state(False)
             return
-        elapsed = time.monotonic() - self.clicker.last_match_time
+        elapsed = time.monotonic() - self.clicker.last_action_time
         if elapsed >= self.clicker.no_match_timeout:
             self._set_tab_warning_state(True)
         else:
             self._set_tab_warning_state(False)
+
+    def _render_timer_label(self, key, widget, text, color):
+        if widget is None or not widget.winfo_exists():
+            return
+        state = (text, color)
+        if self._timer_render_state.get(key) == state:
+            return
+        self._timer_render_state[key] = state
+        widget.configure(text=text, text_color=color)
 
     def update_timer_display(self):
         if self._destroyed or not self.winfo_exists():
@@ -1280,109 +1374,174 @@ class InstanceTabFrame(ctk.CTkFrame):
         is_running = status["is_running"]
         action = status["no_match_action"]
         interval = status["no_match_interval"]
-        no_match_rem = status["no_match_remaining"]
-        no_match_elp = status["no_match_elapsed"]
+        no_match_remaining = status["no_match_remaining"]
+        no_match_elapsed = status["no_match_elapsed"]
         timeout = status["timeout"]
-        timeout_rem = status["timeout_remaining"]
-        timeout_elp = status["timeout_elapsed"]
+        timeout_remaining = status["timeout_remaining"]
+        timeout_elapsed = status["timeout_elapsed"]
         last_template = status["last_matched_template"]
-        last_is_fb = status["last_matched_is_fallback"]
-        last_elp = status["last_match_elapsed"]
+        last_is_fallback = status["last_matched_is_fallback"]
+        last_elapsed = status["last_match_elapsed"]
 
         action_name = NO_MATCH_ACTION_MAP.get(action, action)
         short_action = action_name.split("(")[0].strip()
-
-        # 1. 미매칭 대기 시간
         if not is_running:
-            self.no_match_timer_label.configure(
-                text=f"⚡ 미매칭 대기: 정지됨 (설정: {interval:.0f}s)" if interval > 0 else "⚡ 미매칭 대기: 정지됨",
-                text_color="gray"
+            no_match_text = (
+                f"⚡ 미매칭 대기: 정지됨 (설정: {interval:.0f}s)"
+                if interval > 0
+                else "⚡ 미매칭 대기: 정지됨"
             )
-            if hasattr(self, "fallback_timer_sublabel") and self.fallback_timer_sublabel.winfo_exists():
-                self.fallback_timer_sublabel.configure(
-                    text=f"[설정: {interval:.0f}s]",
-                    text_color="gray"
-                )
+            no_match_color = "gray"
+            fallback_text = f"[설정: {interval:.0f}s]"
+            fallback_color = "gray"
         elif action == "none" or interval <= 0:
-            self.no_match_timer_label.configure(
-                text="⚡ 미매칭 동작: 사용 안 함 (OFF)",
-                text_color="gray"
-            )
-            if hasattr(self, "fallback_timer_sublabel") and self.fallback_timer_sublabel.winfo_exists():
-                self.fallback_timer_sublabel.configure(
-                    text="[미매칭 동작 미사용]",
-                    text_color="gray"
-                )
+            no_match_text = "⚡ 미매칭 동작: 사용 안 함 (OFF)"
+            no_match_color = "gray"
+            fallback_text = "[미매칭 동작 미사용]"
+            fallback_color = "gray"
+        elif no_match_remaining <= 0.05:
+            no_match_text = f"⚡ 미매칭 동작: 실행 대기 중... ({short_action})"
+            no_match_color = "#2ECC71"
+            fallback_text = "⚡ 검사 실행 대기 중..."
+            fallback_color = no_match_color
         else:
-            if no_match_rem <= 0.05:
-                status_text = f"⚡ 미매칭 동작: 실행 대기 중... ({short_action})"
-                color = "#2ECC71"
-            else:
-                status_text = f"⚡ 미매칭 대기: {no_match_rem:.1f}초 남음 ({no_match_elp:.1f}/{interval:.0f}s)"
-                color = "#5DADE2"
-
-            self.no_match_timer_label.configure(
-                text=status_text,
-                text_color=color
+            no_match_text = (
+                f"⚡ 미매칭 대기: {no_match_remaining:.1f}초 남음 "
+                f"({no_match_elapsed:.1f}/{interval:.0f}s)"
             )
-            if hasattr(self, "fallback_timer_sublabel") and self.fallback_timer_sublabel.winfo_exists():
-                self.fallback_timer_sublabel.configure(
-                    text=f"⚡ 검사 대기: {no_match_rem:.1f}s / {interval:.0f}s",
-                    text_color=color
-                )
+            no_match_color = "#5DADE2"
+            fallback_text = (
+                f"⚡ 검사 대기: {no_match_remaining:.1f}s / {interval:.0f}s"
+            )
+            fallback_color = no_match_color
 
-        # 2. 매칭없음 경고 시간
+        warning_active = bool(
+            is_running and timeout > 0 and timeout_elapsed >= timeout
+        )
         if not is_running:
-            self._set_tab_warning_state(False)
-            self.timeout_timer_label.configure(
-                text=f"⚠️ 매칭없음 경고: 정지됨 (설정: {timeout:.0f}s)" if timeout > 0 else "⚠️ 매칭없음 경고: 비활성화",
-                text_color="gray"
+            timeout_text = (
+                f"⚠️ 매칭없음 경고: 정지됨 (설정: {timeout:.0f}s)"
+                if timeout > 0
+                else "⚠️ 매칭없음 경고: 비활성화"
             )
+            timeout_color = "gray"
         elif timeout <= 0:
-            self._set_tab_warning_state(False)
-            self.timeout_timer_label.configure(
-                text="⚠️ 매칭없음 경고: 비활성화 (OFF)",
-                text_color="gray"
+            timeout_text = "⚠️ 매칭없음 경고: 비활성화 (OFF)"
+            timeout_color = "gray"
+        elif warning_active:
+            timeout_text = (
+                f"⚠️ 매칭없음 경고: 경고 발생 중! "
+                f"({timeout_elapsed:.1f}s 경과)"
             )
+            timeout_color = "#FF4D4D"
         else:
-            if timeout_elp >= timeout:
-                self._set_tab_warning_state(True)
-                self.timeout_timer_label.configure(
-                    text=f"⚠️ 매칭없음 경고: 경고 발생 중! ({timeout_elp:.1f}s 경과)",
-                    text_color="#FF4D4D"
-                )
-            else:
-                self._alert_shown_for_current_timeout = False
-                self._set_tab_warning_state(False)
-                if hasattr(self, "normal_header_fg") and self.header_frame.cget("fg_color") != self.normal_header_fg:
-                    self.header_frame.configure(fg_color=self.normal_header_fg)
-                color = "#F39C12" if timeout_rem < 15 else "#D5D8DC"
-                self.timeout_timer_label.configure(
-                    text=f"⚠️ 매칭없음 경고: {timeout_rem:.1f}초 남음 ({timeout_elp:.1f}/{timeout:.0f}s)",
-                    text_color=color
+            timeout_text = (
+                f"⚠️ 매칭없음 경고: {timeout_remaining:.1f}초 남음 "
+                f"({timeout_elapsed:.1f}/{timeout:.0f}s)"
+            )
+            timeout_color = "#F39C12" if timeout_remaining < 15 else "#D5D8DC"
+
+        self._set_tab_warning_state(warning_active)
+        if not warning_active:
+            self._alert_shown_for_current_timeout = False
+            if (
+                hasattr(self, "normal_header_fg")
+                and self.header_frame.cget("fg_color") != self.normal_header_fg
+            ):
+                self.header_frame.configure(fg_color=self.normal_header_fg)
+            if (
+                is_running
+                and self.clicker.device
+                and self.status_label.winfo_exists()
+                and str(self.status_label.cget("text_color")).lower() in ("#ff4d4d", "red")
+            ):
+                self.status_label.configure(
+                    text=f"Status: Running ({self.clicker.device_address})",
+                    text_color="green",
                 )
 
-        # 3. 최근 매칭 정보
+        consecutive_count = status.get("consecutive_match_count", 0)
+        streak_info = f" (연속 {consecutive_count}회)" if consecutive_count > 1 else ""
         if not is_running:
-            self.last_match_info_label.configure(
-                text="🎯 최근 매칭: 대기 중",
-                text_color="gray"
+            recent_text = "🎯 최근 매칭: 대기 중"
+            recent_color = "gray"
+        elif last_template and last_elapsed is not None:
+            tag = " [복구]" if last_is_fallback else ""
+            recent_text = (
+                f"🎯 최근 매칭: {last_template}{tag}{streak_info} "
+                f"({last_elapsed:.0f}초 전)"
             )
-        elif last_template and last_elp is not None:
-            tag = " [복구]" if last_is_fb else ""
-            self.last_match_info_label.configure(
-                text=f"🎯 최근 매칭: {last_template}{tag} ({last_elp:.0f}초 전)",
-                text_color="#2ECC71" if last_elp < 3 else "#BDC3C7"
-            )
+            recent_color = "#2ECC71" if last_elapsed < 3 else "#BDC3C7"
         else:
-            self.last_match_info_label.configure(
-                text="🎯 최근 매칭: 아직 없음",
-                text_color="#A6ACAF"
+            recent_text = "🎯 최근 매칭: 아직 없음"
+            recent_color = "#A6ACAF"
+
+        self._render_timer_label(
+            "no_match", self.no_match_timer_label, no_match_text, no_match_color
+        )
+        self._render_timer_label(
+            "fallback",
+            getattr(self, "fallback_timer_sublabel", None),
+            fallback_text,
+            fallback_color,
+        )
+        self._render_timer_label(
+            "timeout", self.timeout_timer_label, timeout_text, timeout_color
+        )
+        self._render_timer_label(
+            "recent", self.last_match_info_label, recent_text, recent_color
+        )
+
+    def on_consecutive_match_warning(self, filename, count):
+        generation = self._loop_generation
+
+        def show_warning_ui():
+            if (
+                self._destroyed
+                or generation != self._loop_generation
+                or not self.clicker.is_running
+                or not self.winfo_exists()
+            ):
+                return
+            self._set_tab_warning_state(True)
+            if not hasattr(self, "normal_header_fg"):
+                self.normal_header_fg = self.header_frame.cget("fg_color")
+            self.header_frame.configure(fg_color="#5A1A1A")
+            self.status_label.configure(
+                text=f"⚠️ 경고: '{filename}' 템플릿 {count}회 연속 매칭! ({self.clicker.device_address})",
+                text_color="#FF4D4D",
             )
+            try:
+                self.app_owner.tabview.set(self.tab_name)
+            except Exception:
+                pass
+
+            if not self.is_alert_open:
+                self.is_alert_open = True
+                from tkinter import messagebox
+                try:
+                    messagebox.showwarning(
+                        f"⚠️ 연속 매칭 경고 - [{self.tab_name}]",
+                        f"⚠️ 경고 발생 탭: {self.tab_name}\n"
+                        f"📱 디바이스 주소: {self.clicker.device_address}\n\n"
+                        f"⚠️ '{filename}' 템플릿이 연속으로 {count}회 매칭되었습니다!\n"
+                        "화면이 멈춰있거나 무한 루프 상태인지 확인해 주세요.",
+                    )
+                finally:
+                    self.is_alert_open = False
+
+        self.app_owner.post_to_ui(show_warning_ui)
 
     def on_no_match_timeout(self, timeout_sec):
+        generation = self._loop_generation
+
         def show_warning_ui():
-            if self._destroyed or not self.winfo_exists():
+            if (
+                self._destroyed
+                or generation != self._loop_generation
+                or not self.clicker.is_running
+                or not self.winfo_exists()
+            ):
                 return
             self._set_tab_warning_state(True)
             if not hasattr(self, "normal_header_fg"):
@@ -1457,9 +1616,9 @@ class InstanceTabFrame(ctk.CTkFrame):
 
     def toggle_clicker(self):
         self.save_settings()
-        if self.clicker.is_running:
+        if self.clicker.is_running or self._loop_starting:
             self.stop_clicker_loop()
-        elif not self._loop_starting:
+        else:
             self.start_clicker_loop()
 
     def start_clicker_loop(self):
@@ -1470,6 +1629,10 @@ class InstanceTabFrame(ctk.CTkFrame):
             return
 
         self._loop_starting = True
+        self._loop_generation += 1
+        generation = self._loop_generation
+        cancel_event = threading.Event()
+        self._loop_cancel_event = cancel_event
         self._alert_shown_for_current_timeout = False
         self.start_button.configure(
             text="Stop Clicker", fg_color="red", hover_color="#8B0000"
@@ -1481,7 +1644,11 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         def run_loop():
             try:
-                self.clicker.start_loop()
+                if generation != self._loop_generation or self._destroyed:
+                    cancel_event.set()
+                    return
+
+                self.clicker.start_loop(cancel_event=cancel_event)
             finally:
                 def finish_loop():
                     self._loop_starting = False
@@ -1508,14 +1675,43 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.clicker_thread.start()
 
     def stop_clicker_loop(self):
+        self._loop_cancel_event.set()
+        self._loop_generation += 1
         self._alert_shown_for_current_timeout = False
         if self.clicker.is_running or self._loop_starting:
             self.clicker.stop_loop()
             self.start_button.configure(text="Stopping...")
 
-    def shutdown(self):
+    def begin_shutdown(self):
+        if getattr(self, "_shutdown_started", False) is True:
+            return
+        self._shutdown_started = True
+        self._loop_cancel_event.set()
         self._destroyed = True
         self._connection_generation += 1
+        self._loop_generation += 1
+        self.clicker.request_shutdown()
+
+    def shutdown(self):
+        self.begin_shutdown()
+        worker = self.clicker_thread
+        if (
+            worker is not None
+            and worker.is_alive()
+            and worker is not threading.current_thread()
+        ):
+            worker.join(ADB_COMMAND_TIMEOUT + 1.0)
+        deadline = time.monotonic() + ADB_COMMAND_TIMEOUT + 1.0
+        with self._action_threads_lock:
+            action_workers = tuple(self._action_threads)
+        for action_worker in action_workers:
+            if action_worker is threading.current_thread():
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            action_worker.join(remaining)
+
         self.clicker.shutdown()
 
     def refresh_templates(self):
@@ -1567,18 +1763,7 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         action_dict = self.clicker.fallback_template_actions if is_fallback else self.clicker.template_actions
         action = action_dict.get(filename, "click")
-        if action == "back":
-            action_text = "Back (뒤로가기)"
-            action_fg = "#E67E22"
-            action_hover = "#D35400"
-        elif action in ("double_click", "click_click", "double"):
-            action_text = "Double (클릭클릭)"
-            action_fg = "#2980B9"
-            action_hover = "#1F618D"
-        else:
-            action_text = "Click (클릭)"
-            action_fg = "#27AE60"
-            action_hover = "#1E8449"
+        action_text, action_fg, action_hover = get_action_button_style(action)
         
         toggle_cmd = (lambda f=filename: self.toggle_fallback_action_event(f)) if is_fallback else (lambda f=filename: self.toggle_action_event(f))
         action_btn = ctk.CTkButton(row_frame, text=action_text, width=115, height=25,
@@ -1590,19 +1775,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         delay_types_dict = self.clicker.fallback_template_delay_types if is_fallback else self.clicker.template_delay_types
         delay = delays_dict.get(filename, 0.0)
         delay_type = delay_types_dict.get(filename, "pre")
-        if delay > 0:
-            if delay_type == "post":
-                delay_text = f"⏱️후 {delay:g}s"
-                delay_fg = "#1A5276"
-                delay_hover = "#2471A3"
-            else:
-                delay_text = f"⏱️전 {delay:g}s"
-                delay_fg = "#7D6608"
-                delay_hover = "#9A7D0A"
-        else:
-            delay_text = "⏱️ 0s"
-            delay_fg = "#333333"
-            delay_hover = "#444444"
+        delay_text, delay_fg, delay_hover = get_delay_button_style(delay, delay_type)
 
         delay_cmd = (lambda f=filename: self.set_fallback_template_delay_event(f)) if is_fallback else (lambda f=filename: self.set_template_delay_event(f))
         delay_btn = ctk.CTkButton(row_frame, text=delay_text, width=62, height=25,
@@ -1654,18 +1827,51 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         row_frame.bind("<Double-Button-1>", lambda e, f=filename, fb=is_fallback: self.on_template_double_click(f, fb))
 
+        widgets = TemplateRowWidgets(
+            frame=row_frame,
+            priority=priority_label,
+            drag=drag_handle,
+            action_btn=action_btn,
+            delay_btn=delay_btn,
+            count_label=count_label,
+            label=label,
+            del_btn=del_btn,
+        )
+
         if is_fallback:
-            self.fallback_template_row_widgets[filename] = (row_frame, priority_label, drag_handle)
+            self.fallback_template_row_widgets[filename] = widgets
             self.fallback_template_count_labels[filename] = count_label
         else:
-            self.template_row_widgets[filename] = (row_frame, priority_label, drag_handle)
+            self.template_row_widgets[filename] = widgets
             self.template_count_labels[filename] = count_label
+
+    def _start_action_worker(self, target):
+        def run():
+            try:
+                if not self._destroyed:
+                    target()
+            finally:
+                with self._action_threads_lock:
+                    self._action_threads.discard(threading.current_thread())
+
+        worker = threading.Thread(target=run, daemon=True)
+        with self._action_threads_lock:
+            if self._destroyed:
+                return None
+            self._action_threads.add(worker)
+        try:
+            worker.start()
+        except Exception:
+            with self._action_threads_lock:
+                self._action_threads.discard(worker)
+            raise
+        return worker
 
     def on_template_double_click(self, filename, is_fallback=False):
         TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
         row_dict = self.fallback_template_row_widgets if is_fallback else self.template_row_widgets
         if filename in row_dict:
-            frame, _, _ = row_dict[filename]
+            frame = row_dict[filename][0]
             frame.configure(fg_color="#2E7D32")
             self.after(250, lambda: frame.configure(fg_color="transparent") if (not self._destroyed and frame.winfo_exists()) else None)
 
@@ -1676,7 +1882,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         def task():
             self.clicker.execute_template(filename, is_fallback=is_fallback)
 
-        threading.Thread(target=task, daemon=True).start()
+        self._start_action_worker(task)
 
     def move_template(self, filename, direction, is_fallback=False):
         TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
@@ -1689,7 +1895,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             item = order.pop(idx)
             order.insert(new_idx, item)
             self.clicker.save_config()
-            self.app_owner.refresh_all_tabs_templates()
+            self.app_owner.update_all_template_order(order, is_fallback=is_fallback)
 
     def on_drag_start(self, event, filename, is_fallback=False):
         TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
@@ -1703,7 +1909,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         self._drag_positions = []
         for f in order:
             if f in row_dict:
-                frame, _, _ = row_dict[f]
+                frame = row_dict[f][0]
                 try:
                     if frame.winfo_exists():
                         y = frame.winfo_rooty()
@@ -1713,7 +1919,7 @@ class InstanceTabFrame(ctk.CTkFrame):
                     pass
 
         if filename in row_dict:
-            frame, _, _ = row_dict[filename]
+            frame = row_dict[filename][0]
             frame.configure(fg_color="#1F6FE5")
 
     def on_drag_motion(self, event):
@@ -1768,16 +1974,15 @@ class InstanceTabFrame(ctk.CTkFrame):
             item = order.pop(src_idx)
             order.insert(tgt_idx, item)
             self.clicker.save_config()
-
-        self.app_owner.refresh_all_tabs_templates()
+            self.app_owner.update_all_template_order(order, is_fallback=is_fallback)
 
     def toggle_action_event(self, filename):
-        self.clicker.toggle_action(filename)
-        self.app_owner.refresh_all_tabs_templates()
+        new_action = self.clicker.toggle_action(filename)
+        self.app_owner.update_all_template_actions(filename, new_action, is_fallback=False)
 
     def toggle_fallback_action_event(self, filename):
-        self.clicker.toggle_fallback_action(filename)
-        self.app_owner.refresh_all_tabs_templates()
+        new_action = self.clicker.toggle_fallback_action(filename)
+        self.app_owner.update_all_template_actions(filename, new_action, is_fallback=True)
 
     def set_template_delay_event(self, filename):
         TemplateDelayWindow(self, filename, is_fallback=False)
@@ -1787,21 +1992,21 @@ class InstanceTabFrame(ctk.CTkFrame):
 
     def reset_counts_event(self):
         self.clicker.reset_counts()
-        self.app_owner.refresh_all_tabs_templates()
+        self.app_owner.reset_all_template_counts(is_fallback=False)
 
     def reset_fallback_counts_event(self):
         self.clicker.reset_fallback_counts()
-        self.app_owner.refresh_all_tabs_templates()
+        self.app_owner.reset_all_template_counts(is_fallback=True)
 
     def delete_template_event(self, filename):
         TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
         if self.clicker.delete_template(filename):
-            self.app_owner.refresh_all_tabs_templates()
+            self.app_owner.remove_template_from_all_tabs(filename, is_fallback=False)
 
     def delete_fallback_template_event(self, filename):
         TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
         if self.clicker.delete_fallback_template(filename):
-            self.app_owner.refresh_all_tabs_templates()
+            self.app_owner.remove_template_from_all_tabs(filename, is_fallback=True)
 
     def on_fallback_final_action_changed(self, choice):
         action_key = REVERSE_NO_MATCH_ACTION_MAP.get(choice, "none")
@@ -1823,7 +2028,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             self.clicker.fallback_final_coords = [x, y]
         except ValueError:
             pass
-        self.clicker.save_config(include_templates=False)
+        self.app_owner.sync_shared_settings_to_all(self)
         self.app_owner.save_app_config()
 
     def pick_fallback_final_coords(self):
@@ -1941,7 +2146,7 @@ class InstanceTabFrame(ctk.CTkFrame):
                 return
             self.clicker._execute_final_action(screen, action_key)
 
-        threading.Thread(target=task, daemon=True).start()
+        self._start_action_worker(task)
 
     def open_settings_window(self):
         if self.settings_window is None or not self.settings_window.winfo_exists():
@@ -1949,7 +2154,14 @@ class InstanceTabFrame(ctk.CTkFrame):
         else:
             self.settings_window.focus()
 
-    def _prompt_and_save_template(self, crop_img, offset_x, offset_y, is_fallback):
+    def _prompt_and_save_template(
+        self,
+        crop_img,
+        offset_x,
+        offset_y,
+        is_fallback,
+        search_roi=None,
+    ):
         target_type = "미매칭 복구 템플릿" if is_fallback else "기본 템플릿"
         target_dir = (
             self.clicker.fallback_template_dir
@@ -2003,8 +2215,12 @@ class InstanceTabFrame(ctk.CTkFrame):
                 raise ValueError("이미지 인코딩 실패")
             encoded.tofile(temp_path)
             os.replace(temp_path, save_path)
+            self.clicker._discard_location_hint(save_path)
             self.clicker.invalidate_template_cache(save_path)
-            self.clicker.preload_templates(os.path.dirname(save_path))
+            self.clicker.preload_templates(
+                os.path.dirname(save_path),
+                grayscales=(bool(self.clicker.match_grayscale),),
+            )
 
             if is_fallback:
                 order = self.clicker.fallback_template_order
@@ -2013,6 +2229,7 @@ class InstanceTabFrame(ctk.CTkFrame):
                 offsets = self.clicker.fallback_template_offsets
                 delays = self.clicker.fallback_template_delays
                 delay_types = self.clicker.fallback_template_delay_types
+                rois = self.clicker.fallback_template_rois
             else:
                 order = self.clicker.template_order
                 counts = self.clicker.template_counts
@@ -2020,6 +2237,7 @@ class InstanceTabFrame(ctk.CTkFrame):
                 offsets = self.clicker.template_offsets
                 delays = self.clicker.template_delays
                 delay_types = self.clicker.template_delay_types
+                rois = self.clicker.template_rois
 
             if file_name not in order:
                 order.append(file_name)
@@ -2028,12 +2246,20 @@ class InstanceTabFrame(ctk.CTkFrame):
             offsets[file_name] = [offset_x, offset_y]
             delays.setdefault(file_name, 0.0)
             delay_types.setdefault(file_name, "pre")
-            self.clicker.save_config(include_templates=True)
+            validated_roi = self.clicker._safe_rois({file_name: search_roi})
+            if file_name in validated_roi:
+                rois[file_name] = validated_roi[file_name]
+            if not self.clicker.save_config(include_templates=True):
+                raise OSError(
+                    "이미지는 저장됐지만 config.json 갱신에 실패했습니다."
+                )
             self.log_message(
                 f"[{target_type}] 저장 완료: {save_path} "
                 f"(클릭 오프셋: {offset_x:+d}, {offset_y:+d})"
             )
-            self.app_owner.refresh_all_tabs_templates()
+            self.app_owner.add_template_to_all_tabs(
+                file_name, offset_x, offset_y, is_fallback=is_fallback
+            )
         except Exception as error:
             self.log_message(f"저장 중 오류: {error}")
         finally:
@@ -2194,9 +2420,17 @@ class InstanceTabFrame(ctk.CTkFrame):
 
                 offset_x = selected_point[0] - roi_x
                 offset_y = selected_point[1] - roi_y
+                search_margin_x = max(48, roi_width)
+                search_margin_y = max(48, roi_height)
+                search_roi = [
+                    max(0, roi_x - search_margin_x) / width,
+                    max(0, roi_y - search_margin_y) / height,
+                    min(width, roi_x + roi_width + search_margin_x) / width,
+                    min(height, roi_y + roi_height + search_margin_y) / height,
+                ]
                 self.app_owner.post_to_ui(
                     lambda: self._prompt_and_save_template(
-                        crop_img, offset_x, offset_y, is_fallback
+                        crop_img, offset_x, offset_y, is_fallback, search_roi
                     )
                 )
             except Exception as error:
@@ -2223,6 +2457,7 @@ class App(ctk.CTk):
         self.tab_frames = {}
         self.tab_counter = 0
         self._closing = False
+        self._start_all_generation = 0
         self._initializing_tabs = True
         self._ui_queue = queue.SimpleQueue()
         self.opencv_lock = threading.Lock()
@@ -2230,7 +2465,10 @@ class App(ctk.CTk):
         self._timer_pump_id = self.after(500, self._pump_timer_updates)
 
         # Preload templates in background thread
-        threading.Thread(target=TeraboxClicker.preload_templates, daemon=True).start()
+        threading.Thread(
+            target=self._preload_configured_templates,
+            daemon=True,
+        ).start()
 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -2307,6 +2545,25 @@ class App(ctk.CTk):
         # Auto refresh devices after short delay
         self.after(500, self.refresh_all_devices)
 
+    @staticmethod
+    def _preload_configured_templates():
+        config = TeraboxClicker.read_config(CONFIG_PATH)
+        default_mode = TeraboxClicker._safe_bool(
+            config.get("match_grayscale"), True
+        )
+        instances = config.get("instances", [])
+        if not isinstance(instances, list):
+            instances = []
+        modes = {
+            TeraboxClicker._safe_bool(
+                instance.get("match_grayscale"), default_mode
+            )
+            for instance in instances
+            if isinstance(instance, dict)
+        }
+        if not modes:
+            modes.add(default_mode)
+        TeraboxClicker.preload_templates(grayscales=tuple(modes))
     def format_tab_name(self, index, device_address):
         addr_str = str(device_address).strip()
         if addr_str.startswith("emulator-"):
@@ -2436,6 +2693,106 @@ class App(ctk.CTk):
         for frame in tuple(self.tab_frames.values()):
             frame.refresh_templates()
 
+    def update_all_template_actions(self, filename, action, is_fallback=False):
+        action_text, action_fg, action_hover = get_action_button_style(action)
+        for frame in tuple(self.tab_frames.values()):
+            if is_fallback:
+                frame.clicker.fallback_template_actions[filename] = action
+                row_dict = frame.fallback_template_row_widgets
+            else:
+                frame.clicker.template_actions[filename] = action
+                row_dict = frame.template_row_widgets
+            if filename in row_dict:
+                row_dict[filename].action_btn.configure(
+                    text=action_text, fg_color=action_fg, hover_color=action_hover
+                )
+
+    def update_all_template_delays(self, filename, delay, delay_type, is_fallback=False):
+        delay_text, delay_fg, delay_hover = get_delay_button_style(delay, delay_type)
+        for frame in tuple(self.tab_frames.values()):
+            if is_fallback:
+                frame.clicker.fallback_template_delays[filename] = delay
+                frame.clicker.fallback_template_delay_types[filename] = delay_type
+                row_dict = frame.fallback_template_row_widgets
+            else:
+                frame.clicker.template_delays[filename] = delay
+                frame.clicker.template_delay_types[filename] = delay_type
+                row_dict = frame.template_row_widgets
+            if filename in row_dict:
+                row_dict[filename].delay_btn.configure(
+                    text=delay_text, fg_color=delay_fg, hover_color=delay_hover
+                )
+
+    def update_all_template_order(self, order, is_fallback=False):
+        for frame in tuple(self.tab_frames.values()):
+            if is_fallback:
+                frame.clicker.fallback_template_order = list(order)
+                row_dict = frame.fallback_template_row_widgets
+            else:
+                frame.clicker.template_order = list(order)
+                row_dict = frame.template_row_widgets
+            for idx, filename in enumerate(order):
+                if filename in row_dict:
+                    w = row_dict[filename]
+                    w.frame.pack(fill="x", padx=5, pady=1)
+                    w.priority.configure(text=f"{idx+1}.")
+
+    def remove_template_from_all_tabs(self, filename, is_fallback=False):
+        for frame in tuple(self.tab_frames.values()):
+            if is_fallback:
+                order = frame.clicker.fallback_template_order
+                row_dict = frame.fallback_template_row_widgets
+                count_dict = frame.fallback_template_count_labels
+            else:
+                order = frame.clicker.template_order
+                row_dict = frame.template_row_widgets
+                count_dict = frame.template_count_labels
+            if filename in row_dict:
+                w = row_dict.pop(filename)
+                w.frame.destroy()
+            if filename in count_dict:
+                count_dict.pop(filename, None)
+            for idx, fn in enumerate(order):
+                if fn in row_dict:
+                    row_dict[fn].priority.configure(text=f"{idx+1}.")
+
+    def add_template_to_all_tabs(self, filename, offset_x=0, offset_y=0, is_fallback=False):
+        for frame in tuple(self.tab_frames.values()):
+            if is_fallback:
+                order = frame.clicker.fallback_template_order
+                parent = frame.fallback_templates_frame
+                frame.clicker.fallback_template_offsets[filename] = [offset_x, offset_y]
+                frame.clicker.fallback_template_counts.setdefault(filename, 0)
+                frame.clicker.fallback_template_actions.setdefault(filename, "click")
+                frame.clicker.fallback_template_delays.setdefault(filename, 0.0)
+                frame.clicker.fallback_template_delay_types.setdefault(filename, "pre")
+            else:
+                order = frame.clicker.template_order
+                parent = frame.templates_frame
+                frame.clicker.template_offsets[filename] = [offset_x, offset_y]
+                frame.clicker.template_counts.setdefault(filename, 0)
+                frame.clicker.template_actions.setdefault(filename, "click")
+                frame.clicker.template_delays.setdefault(filename, 0.0)
+                frame.clicker.template_delay_types.setdefault(filename, "pre")
+            if filename not in order:
+                order.append(filename)
+            idx = order.index(filename)
+            row_dict = frame.fallback_template_row_widgets if is_fallback else frame.template_row_widgets
+            if filename not in row_dict:
+                frame.create_template_row(parent, filename, idx, is_fallback=is_fallback)
+
+    def reset_all_template_counts(self, is_fallback=False):
+        for frame in tuple(self.tab_frames.values()):
+            if is_fallback:
+                frame.clicker.reset_fallback_counts()
+                count_dict = frame.fallback_template_count_labels
+            else:
+                frame.clicker.reset_counts()
+                count_dict = frame.template_count_labels
+            for label in count_dict.values():
+                if label and label.winfo_exists():
+                    label.configure(text="Clicks: 0")
+
     def update_template_count_for_all(self, filename, count, is_fallback):
         for frame in tuple(self.tab_frames.values()):
             labels = (
@@ -2448,13 +2805,28 @@ class App(ctk.CTk):
                 label.configure(text=f"Clicks: {count}")
 
     def start_all_clickers(self):
-        for frame in self.tab_frames.values():
-            if frame.clicker.device and not frame.clicker.is_running:
+        self._start_all_generation += 1
+        generation = self._start_all_generation
+        def start_frame(frame):
+            if (
+                generation == self._start_all_generation
+                and not frame._destroyed
+                and frame.clicker.device
+                and not frame.clicker.is_running
+            ):
                 frame.start_clicker_loop()
 
-    def stop_all_clickers(self):
+        scheduled = 0
         for frame in self.tab_frames.values():
-            if frame.clicker.is_running:
+            if frame.clicker.device and not frame.clicker.is_running:
+                self.after(scheduled * 150, lambda target=frame: start_frame(target))
+                scheduled += 1
+
+    def stop_all_clickers(self):
+        self._start_all_generation += 1
+        for frame in self.tab_frames.values():
+            # Pending staggered starts were invalidated before iteration.
+            if frame.clicker.is_running or frame._loop_starting:
                 frame.stop_clicker_loop()
 
     def connect_all_instances(self):
@@ -2481,28 +2853,40 @@ class App(ctk.CTk):
 
         threading.Thread(target=task, daemon=True).start()
 
+    def sync_shared_settings_to_all(self, source_frame=None):
+        """Synchronize shared settings across all tab frames and their clicker instances."""
+        if not self.tab_frames:
+            return
+        if source_frame is None:
+            source_frame = next(iter(self.tab_frames.values()))
+        master_settings = source_frame.clicker._settings_dict()
+
+        for frame in tuple(self.tab_frames.values()):
+            if frame is not source_frame:
+                frame.clicker._apply_settings(master_settings)
+                if hasattr(frame, "fb_final_combo") and frame.fb_final_combo.winfo_exists():
+                    curr_fb_action = getattr(frame.clicker, "fallback_final_action", "none")
+                    curr_fb_label = NO_MATCH_ACTION_MAP.get(curr_fb_action, "사용 안 함 (Disabled)")
+                    frame.fb_final_combo.set(curr_fb_label)
+                    coords = getattr(frame.clicker, "fallback_final_coords", [500, 500])
+                    frame.fb_final_x_entry.delete(0, "end")
+                    frame.fb_final_x_entry.insert(0, str(coords[0]))
+                    frame.fb_final_y_entry.delete(0, "end")
+                    frame.fb_final_y_entry.insert(0, str(coords[1]))
+                    frame.update_fb_final_coord_visibility(curr_fb_action)
+
     def save_app_config(self):
-        instances_data = []
-        for frame in self.tab_frames.values():
-            clicker = frame.clicker
-            instances_data.append({
-                "device_address": clicker.device_address,
-                "scan_interval": clicker.scan_interval,
-                "no_match_timeout": clicker.no_match_timeout,
-                "similarity_threshold": clicker.similarity_threshold,
-                "match_grayscale": clicker.match_grayscale,
-                "enable_random_click": clicker.enable_random_click,
-                "random_click_interval": clicker.random_click_interval,
-                "double_click_interval": getattr(clicker, 'double_click_interval', 1.0),
-                "post_action_delay": getattr(clicker, 'post_action_delay', 2.0),
-                "no_match_action": clicker.no_match_action,
-                "no_match_interval": clicker.no_match_interval,
-                "no_match_coords": list(clicker.no_match_coords),
-                "fallback_final_action": getattr(clicker, 'fallback_final_action', 'none'),
-                "fallback_final_coords": list(getattr(clicker, 'fallback_final_coords', [500, 500])),
-            })
+        instances_data = [
+            {"device_address": frame.clicker.device_address}
+            for frame in self.tab_frames.values()
+        ]
+        primary_settings = None
+        if self.tab_frames:
+            primary_settings = next(iter(self.tab_frames.values())).clicker._settings_dict()
         return TeraboxClicker.update_instances_config(
-            instances_data, CONFIG_PATH
+            instances_data,
+            CONFIG_PATH,
+            primary_settings=primary_settings,
         )
 
     def on_closing(self):
@@ -2510,7 +2894,11 @@ class App(ctk.CTk):
             return
         self._closing = True
         TemplatePreviewTooltip.get_instance().hide()
-        for frame in tuple(self.tab_frames.values()):
+        self._start_all_generation += 1
+        frames = tuple(self.tab_frames.values())
+        for frame in frames:
+            frame.begin_shutdown()
+        for frame in frames:
             frame.shutdown()
         self.save_app_config()
         try:

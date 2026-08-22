@@ -87,7 +87,21 @@
             "fallback_final_coords": [
                 500,
                 500
-            ]
+            ],
+            "double_click_interval": 1,
+            "post_action_delay": 2,
+            "local_verify": true,
+            "local_verify_margin": 12,
+            "local_verify_top_k": 3,
+            "dynamic_roi": true,
+            "roi_fullscreen_fallback": true,
+            "frame_change_detection": true,
+            "force_scan_interval": 5,
+            "adaptive_scan_interval": true,
+            "max_idle_interval": 5,
+            "adaptive_template_order": false,
+            "capture_backend": "auto",
+            "performance_metrics": false
         },
         {
             "device_address": "emulator-5556",
@@ -107,7 +121,21 @@
             "fallback_final_coords": [
                 500,
                 500
-            ]
+            ],
+            "double_click_interval": 1,
+            "post_action_delay": 2,
+            "local_verify": true,
+            "local_verify_margin": 12,
+            "local_verify_top_k": 3,
+            "dynamic_roi": true,
+            "roi_fullscreen_fallback": true,
+            "frame_change_detection": true,
+            "force_scan_interval": 5,
+            "adaptive_scan_interval": true,
+            "max_idle_interval": 5,
+            "adaptive_template_order": false,
+            "capture_backend": "auto",
+            "performance_metrics": false
         },
         {
             "device_address": "emulator-5558",
@@ -127,7 +155,21 @@
             "fallback_final_coords": [
                 500,
                 500
-            ]
+            ],
+            "double_click_interval": 1,
+            "post_action_delay": 2,
+            "local_verify": true,
+            "local_verify_margin": 12,
+            "local_verify_top_k": 3,
+            "dynamic_roi": true,
+            "roi_fullscreen_fallback": true,
+            "frame_change_detection": true,
+            "force_scan_interval": 5,
+            "adaptive_scan_interval": true,
+            "max_idle_interval": 5,
+            "adaptive_template_order": false,
+            "capture_backend": "auto",
+            "performance_metrics": false
         }
     ],
     "template_offsets": {
@@ -270,5 +312,18 @@
     "fallback_final_coords": [
         500,
         500
-    ]
+    ],
+    "post_action_delay": 2,
+    "local_verify": true,
+    "local_verify_margin": 12,
+    "local_verify_top_k": 3,
+    "dynamic_roi": true,
+    "roi_fullscreen_fallback": true,
+    "frame_change_detection": true,
+    "force_scan_interval": 5,
+    "adaptive_scan_interval": true,
+    "max_idle_interval": 5,
+    "adaptive_template_order": false,
+    "capture_backend": "auto",
+    "performance_metrics": false
 }

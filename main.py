@@ -1,16 +1,20 @@
 import cv2
 import numpy as np
 from ppadb.client import Client as AdbClient
-from collections import defaultdict
+from ppadb.device import Device as AdbDevice
+from collections import Counter, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
+import copy
 import json
 import math
 import os
 import random
+import struct
 import subprocess
 import sys
 import threading
 import time
+import zlib
 
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
@@ -21,10 +25,20 @@ VALID_NO_MATCH_ACTIONS = {
     "custom_double_click", "double_click", "click_click", "back",
 }
 CONFIG_FILENAME = "config.json"
+TEMPLATE_DIR_NAME = "templates"
+FALLBACK_TEMPLATE_DIR_NAME = "fallback_templates"
 COUNT_FLUSH_INTERVAL = 5.0
 ADB_COMMAND_TIMEOUT = 10.0
 PRESCALE_FACTOR = 0.5
 PRESCALE_MIN_TEMPLATE_DIM = 20
+LOCAL_VERIFY_MARGIN = 12
+LOCAL_VERIFY_TOP_K = 3
+HINT_FULL_SCAN_INTERVAL = 10
+PERFORMANCE_SAMPLE_LIMIT = 240
+DEFAULT_FORCE_SCAN_INTERVAL = 5.0
+DEFAULT_MAX_IDLE_INTERVAL = 5.0
+DEFAULT_CAPTURE_BACKEND = "auto"
+VALID_CAPTURE_BACKENDS = {"auto", "png", "raw"}
 
 
 def get_app_dir():
@@ -58,6 +72,7 @@ DEFAULT_ENABLE_RANDOM_CLICK = False
 DEFAULT_RANDOM_CLICK_INTERVAL = 30
 DEFAULT_DOUBLE_CLICK_INTERVAL = 1.0
 DEFAULT_POST_ACTION_DELAY = 2.0
+DEFAULT_CONSECUTIVE_MATCH_THRESHOLD = 0
 APP_DIR = get_app_dir()
 CONFIG_PATH = os.path.join(APP_DIR, CONFIG_FILENAME)
 ADB_PATH = get_default_adb_path(APP_DIR)
@@ -68,6 +83,7 @@ class TeraboxClicker:
 
     _config_lock = threading.RLock()
     _template_cache_lock = threading.RLock()
+    _preload_lock = threading.Lock()
     _template_cache = {}
     _scaled_template_cache = {}
     _pending_count_deltas = defaultdict(
@@ -105,6 +121,14 @@ class TeraboxClicker:
         base_dir=None,
         match_grayscale=None,
         post_action_delay=None,
+        local_verify=None,
+        frame_change_detection=None,
+        adaptive_scan_interval=None,
+        adaptive_template_order=None,
+        capture_backend=None,
+        performance_metrics=None,
+        consecutive_match_threshold=None,
+        on_consecutive_match_callback=None,
     ):
         self.base_dir = os.path.abspath(base_dir or APP_DIR)
         self.adb_path = adb_path or get_default_adb_path(self.base_dir)
@@ -150,11 +174,56 @@ class TeraboxClicker:
             if post_action_delay is not None
             else DEFAULT_POST_ACTION_DELAY
         )
+        self.local_verify = True if local_verify is None else bool(local_verify)
+        self.local_verify_margin = LOCAL_VERIFY_MARGIN
+        self.local_verify_top_k = LOCAL_VERIFY_TOP_K
+        self.dynamic_roi = True
+        self.roi_fullscreen_fallback = True
+        self.frame_change_detection = (
+            True if frame_change_detection is None else bool(frame_change_detection)
+        )
+        self.force_scan_interval = DEFAULT_FORCE_SCAN_INTERVAL
+        self.adaptive_scan_interval = (
+            True if adaptive_scan_interval is None else bool(adaptive_scan_interval)
+        )
+        self.max_idle_interval = DEFAULT_MAX_IDLE_INTERVAL
+        self.adaptive_template_order = (
+            False if adaptive_template_order is None else bool(adaptive_template_order)
+        )
+        self.capture_backend = str(
+            capture_backend or DEFAULT_CAPTURE_BACKEND
+        ).strip().lower()
+        if self.capture_backend not in VALID_CAPTURE_BACKENDS:
+            self.capture_backend = DEFAULT_CAPTURE_BACKEND
+        self.performance_metrics = (
+            False if performance_metrics is None else bool(performance_metrics)
+        )
+        self._optimization_defaults = {
+            "local_verify": self.local_verify,
+            "frame_change_detection": self.frame_change_detection,
+            "adaptive_scan_interval": self.adaptive_scan_interval,
+            "adaptive_template_order": self.adaptive_template_order,
+            "capture_backend": self.capture_backend,
+            "performance_metrics": self.performance_metrics,
+        }
         self.no_match_action = "none"
         self.no_match_interval = self.random_click_interval
         self.no_match_coords = [500, 500]
         self.fallback_final_action = "none"
         self.fallback_final_coords = [500, 500]
+        self.consecutive_match_threshold = (
+            self._safe_int(
+                consecutive_match_threshold,
+                DEFAULT_CONSECUTIVE_MATCH_THRESHOLD,
+                minimum=0,
+            )
+            if consecutive_match_threshold is not None
+            else DEFAULT_CONSECUTIVE_MATCH_THRESHOLD
+        )
+        self.on_consecutive_match_callback = on_consecutive_match_callback
+        self.consecutive_match_count = 0
+        self.consecutive_match_template = None
+        self._consecutive_alert_triggered = False
         self.on_timeout_callback = on_timeout_callback
         self.on_match_callback = on_match_callback
         self.logger = logger if logger else print
@@ -166,16 +235,42 @@ class TeraboxClicker:
         self.last_matched_template = None
         self.last_matched_is_fallback = False
         self._timeout_alert_active = False
+        self._last_frame_signature = None
+        self._last_full_scan_time = 0.0
+        self._last_scan_had_match = False
+        self._force_full_scan = True
+        self._unchanged_frame_streak = 0
+        self._automatic_loop_active = False
+        self._template_location_hints = {}
+        self._hint_lock = threading.RLock()
+        self._template_hint_hits = defaultdict(int)
+        self._roi_full_scan_times = {}
+        self._transition_counts = defaultdict(Counter)
+        self._adaptive_order_cycle = 0
+        self._perf_lock = threading.Lock()
+        self._perf_samples = defaultdict(
+            lambda: deque(maxlen=PERFORMANCE_SAMPLE_LIMIT)
+        )
+        self._exec_out_disabled_until = 0.0
+        self._exec_out_failure_count = 0
+        self._raw_capture_disabled_until = 0.0
+        self._next_reconnect_at = 0.0
+        self._reconnect_delay = 1.0
 
         self.client = None
         self.device = None
         self.is_running = False
         self._stop_event = threading.Event()
+        self._shutdown_event = threading.Event()
+        self._loop_wake_event = threading.Event()
+        self._active_loop_cancel_event = None
+        self._loop_worker_active = False
         self._device_lock = threading.RLock()
+        self._loop_state_lock = threading.RLock()
 
-        self.template_dir = os.path.join(self.base_dir, "templates")
+        self.template_dir = os.path.join(self.base_dir, TEMPLATE_DIR_NAME)
         self.fallback_template_dir = os.path.join(
-            self.base_dir, "fallback_templates"
+            self.base_dir, FALLBACK_TEMPLATE_DIR_NAME
         )
         self.config_path = os.path.join(self.base_dir, CONFIG_FILENAME)
         self.template_order = []
@@ -184,12 +279,14 @@ class TeraboxClicker:
         self.template_offsets = {}
         self.template_delays = {}
         self.template_delay_types = {}
+        self.template_rois = {}
         self.fallback_template_order = []
         self.fallback_template_counts = {}
         self.fallback_template_actions = {}
         self.fallback_template_offsets = {}
         self.fallback_template_delays = {}
         self.fallback_template_delay_types = {}
+        self.fallback_template_rois = {}
 
         os.makedirs(self.template_dir, exist_ok=True)
         os.makedirs(self.fallback_template_dir, exist_ok=True)
@@ -290,6 +387,214 @@ class TeraboxClicker:
                 result[filename] = timing
         return result
 
+
+    @staticmethod
+    def _safe_rois(value):
+        """Validate normalized [left, top, right, bottom] template regions."""
+        if not isinstance(value, dict):
+            return {}
+        result = {}
+        for filename, bounds in value.items():
+            if not isinstance(filename, str) or not isinstance(bounds, (list, tuple)):
+                continue
+            if len(bounds) != 4:
+                continue
+            try:
+                left, top, right, bottom = (float(item) for item in bounds)
+            except (TypeError, ValueError):
+                continue
+            if not all(math.isfinite(item) for item in (left, top, right, bottom)):
+                continue
+            if 0.0 <= left < right <= 1.0 and 0.0 <= top < bottom <= 1.0:
+                result[filename] = [left, top, right, bottom]
+        return result
+
+    def _record_performance(self, stage, started_at):
+        if not self.performance_metrics:
+            return 0.0
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        with self._perf_lock:
+            self._perf_samples[stage].append(elapsed_ms)
+        return elapsed_ms
+
+    def get_performance_stats(self, reset=False):
+        """Return bounded rolling timing statistics without emitting scan-time logs."""
+        with self._perf_lock:
+            snapshots = {
+                stage: tuple(samples)
+                for stage, samples in self._perf_samples.items()
+                if samples
+            }
+            if reset:
+                self._perf_samples.clear()
+        result = {}
+        for stage, samples in snapshots.items():
+            ordered = sorted(samples)
+            p95_index = min(len(ordered) - 1, math.ceil(len(ordered) * 0.95) - 1)
+            result[stage] = {
+                "count": len(samples),
+                "avg_ms": sum(samples) / len(samples),
+                "p95_ms": ordered[p95_index],
+                "max_ms": max(samples),
+            }
+        return result
+
+    @staticmethod
+    def _frame_signature(screen):
+        contiguous = screen if screen.flags.c_contiguous else np.ascontiguousarray(screen)
+        return (
+            tuple(contiguous.shape),
+            contiguous.dtype.str,
+            zlib.crc32(memoryview(contiguous)) & 0xFFFFFFFF,
+        )
+
+    def _should_scan_frame(self, screen, now):
+        if not self.frame_change_detection or not self._automatic_loop_active:
+            self._last_full_scan_time = now
+            self._unchanged_frame_streak = 0
+            return True
+
+        signature = self._frame_signature(screen)
+        unchanged = signature == self._last_frame_signature
+        self._last_frame_signature = signature
+        force_due = now - self._last_full_scan_time >= self.force_scan_interval
+        can_skip = (
+            unchanged
+            and not self._force_full_scan
+            and not force_due
+            and not self._last_scan_had_match
+        )
+        if can_skip:
+            self._unchanged_frame_streak += 1
+            return False
+
+        self._last_full_scan_time = now
+        self._force_full_scan = False
+        if not unchanged:
+            self._unchanged_frame_streak = 0
+            if hasattr(self, "_hint_lock"):
+                with self._hint_lock:
+                    self._roi_full_scan_times.clear()
+        return True
+
+    def _mark_screen_dirty(self):
+        self._force_full_scan = True
+        self._last_frame_signature = None
+        self._unchanged_frame_streak = 0
+
+        if hasattr(self, "_hint_lock"):
+            with self._hint_lock:
+                self._roi_full_scan_times.clear()
+    def _current_loop_interval(self):
+        base = float(self._safe_number(
+            self.scan_interval, DEFAULT_SCAN_INTERVAL, minimum=0.1
+        ))
+        if not self.adaptive_scan_interval or self._unchanged_frame_streak <= 0:
+            return base
+        maximum = max(base, float(self.max_idle_interval))
+        multiplier = 1.5 ** min(self._unchanged_frame_streak, 4)
+        return min(maximum, base * multiplier)
+
+    def _current_wait_interval(self, now=None, elapsed=0.0):
+        """Return cadence remaining, capped by deadlines measured from now."""
+        now = time.monotonic() if now is None else now
+        interval = max(
+            0.01,
+            self._current_loop_interval() - max(0.0, float(elapsed)),
+        )
+        remaining = []
+        reconnect_pending = (
+            self.device is None
+            and self._next_reconnect_at > now
+        )
+        if not reconnect_pending:
+            remaining.append(interval)
+
+        if not reconnect_pending and (
+            self.frame_change_detection
+            and self._automatic_loop_active
+            and self._last_full_scan_time > 0
+        ):
+            force_remaining = self.force_scan_interval - (
+                now - self._last_full_scan_time
+            )
+            remaining.append(max(0.01, force_remaining))
+
+        if (
+            not reconnect_pending
+            and self.no_match_action != "none"
+            and self.no_match_interval > 0
+        ):
+            no_match_elapsed = min(
+                now - self.last_match_time,
+                now - self.last_random_click_time,
+            )
+            action_remaining = self.no_match_interval - no_match_elapsed
+            remaining.append(max(0.01, action_remaining))
+
+        if self.no_match_timeout > 0 and not self._timeout_alert_active:
+            timeout_remaining = self.no_match_timeout - (
+                now - self.last_action_time
+            )
+            remaining.append(max(0.01, timeout_remaining))
+
+        if reconnect_pending:
+            remaining.append(
+                max(0.01, self._next_reconnect_at - now)
+            )
+
+        return max(0.01, min(remaining))
+
+    def _wait_for_loop_wake(self, timeout, cancel_event=None):
+        timeout = max(0.0, float(timeout))
+        if cancel_event is None:
+            return self._loop_wake_event.wait(timeout)
+
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancel_event.is_set():
+                self.stop_loop()
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if self._loop_wake_event.wait(min(0.1, remaining)):
+                return True
+
+    def _get_template_scan_order(self, order, is_fallback=False):
+        base_order = tuple(order)
+        if not self.adaptive_template_order or len(base_order) <= 3:
+            return base_order
+
+        self._adaptive_order_cycle += 1
+        if self._adaptive_order_cycle % 10 == 0 or not self.last_matched_template:
+            return base_order
+
+        previous = (bool(self.last_matched_is_fallback), self.last_matched_template)
+        transitions = self._transition_counts.get(previous)
+        if not transitions:
+            return base_order
+
+        protected = base_order[:3]
+        tail = list(base_order[3:])
+        original_index = {filename: index for index, filename in enumerate(tail)}
+        predicted = [
+            filename
+            for filename in tail
+            if transitions.get((bool(is_fallback), filename), 0) >= 3
+        ]
+        predicted.sort(
+            key=lambda filename: (
+                -transitions[(bool(is_fallback), filename)],
+                original_index[filename],
+            )
+        )
+        if not predicted:
+            return base_order
+        predicted_set = set(predicted)
+        return protected + tuple(predicted) + tuple(
+            filename for filename in tail if filename not in predicted_set
+        )
     @classmethod
     def _read_config_unlocked(cls, config_path):
         if not os.path.exists(config_path):
@@ -300,14 +605,14 @@ class TeraboxClicker:
             mtime = None
         cached_mtime = cls._config_cache_mtime.get(config_path)
         if cached_mtime is not None and mtime == cached_mtime and config_path in cls._config_cache:
-            return dict(cls._config_cache[config_path])
+            return copy.deepcopy(cls._config_cache[config_path])
         with open(config_path, "r", encoding="utf-8") as file:
             config = json.load(file)
         if not isinstance(config, dict):
             raise ValueError("config.json 최상위 값은 객체여야 합니다.")
-        cls._config_cache[config_path] = config
+        cls._config_cache[config_path] = copy.deepcopy(config)
         cls._config_cache_mtime[config_path] = mtime
-        return dict(config)
+        return copy.deepcopy(config)
 
     @classmethod
     def _atomic_write_config_unlocked(cls, config_path, config, do_fsync=True):
@@ -322,7 +627,7 @@ class TeraboxClicker:
                 if do_fsync:
                     os.fsync(file.fileno())
             os.replace(temp_path, config_path)
-            cls._config_cache[config_path] = dict(config)
+            cls._config_cache[config_path] = copy.deepcopy(config)
             try:
                 cls._config_cache_mtime[config_path] = os.path.getmtime(config_path)
             except OSError:
@@ -345,11 +650,19 @@ class TeraboxClicker:
 
     @classmethod
     def _flush_pending_counts_unlocked(cls, config_path):
-        pending = cls._pending_count_deltas[config_path]
-        if not any(pending[key] for key in pending):
+        config = cls._read_config_unlocked(config_path)
+        snapshots = cls._merge_pending_counts_unlocked(config_path, config)
+        if not any(snapshots.values()):
             return True
 
-        config = cls._read_config_unlocked(config_path)
+        cls._atomic_write_config_unlocked(config_path, config)
+        cls._ack_pending_counts_unlocked(config_path, snapshots)
+        return True
+
+    @classmethod
+    def _merge_pending_counts_unlocked(cls, config_path, config):
+        """Merge a stable delta snapshot into config without writing it yet."""
+        pending = cls._pending_count_deltas[config_path]
         snapshots = {}
         for count_key in ("template_counts", "fallback_template_counts"):
             snapshots[count_key] = dict(pending[count_key])
@@ -362,14 +675,16 @@ class TeraboxClicker:
                 current = cls._safe_int(counts.get(filename, 0))
                 counts[filename] = current + delta
             config[count_key] = counts
+        return snapshots
 
-        cls._atomic_write_config_unlocked(config_path, config)
+    @classmethod
+    def _ack_pending_counts_unlocked(cls, config_path, snapshots):
+        pending = cls._pending_count_deltas[config_path]
         for count_key, deltas in snapshots.items():
             for filename, delta in deltas.items():
                 pending[count_key][filename] -= delta
                 if pending[count_key][filename] <= 0:
                     del pending[count_key][filename]
-        return True
 
     @classmethod
     def _schedule_count_flush_unlocked(cls, config_path):
@@ -404,18 +719,55 @@ class TeraboxClicker:
         return True
 
     @classmethod
-    def update_instances_config(cls, instances, config_path=CONFIG_PATH):
+    def update_instances_config(
+        cls, instances, config_path=CONFIG_PATH, primary_settings=None
+    ):
+        """Merge per-device settings and persist the GUI snapshot in one write."""
         config_path = os.path.abspath(config_path)
+        if not isinstance(instances, (list, tuple)):
+            instances = []
         with cls._config_lock:
             try:
-                cls._flush_pending_counts_unlocked(config_path)
                 config = cls._read_config_unlocked(config_path)
-                config["instances"] = [
-                    dict(instance)
-                    for instance in instances
-                    if isinstance(instance, dict)
+                snapshots = cls._merge_pending_counts_unlocked(
+                    config_path, config
+                )
+                existing = config.get("instances", [])
+                if not isinstance(existing, list):
+                    existing = []
+                existing = [
+                    item
+                    for item in existing
+                    if isinstance(item, dict)
+                    and isinstance(item.get("device_address"), str)
                 ]
-                cls._atomic_write_config_unlocked(config_path, config)
+                existing_by_address = {
+                    item.get("device_address"): dict(item)
+                    for item in existing
+                    if isinstance(item, dict) and item.get("device_address")
+                }
+                instance_list = []
+                for instance in instances:
+                    if isinstance(instance, dict):
+                        address = instance.get("device_address")
+                        merged = dict(existing_by_address.get(address, {}))
+                        merged.update(instance)
+                    elif isinstance(instance, str):
+                        address = instance
+                        merged = dict(existing_by_address.get(address, {"device_address": address}))
+                    else:
+                        address = None
+                        merged = None
+                    if address and address not in [i.get("device_address") for i in instance_list]:
+                        instance_list.append(merged)
+                if isinstance(primary_settings, dict):
+                    config.update(primary_settings)
+                if instance_list:
+                    config["instances"] = instance_list
+                cls._atomic_write_config_unlocked(
+                    config_path, config, do_fsync=False
+                )
+                cls._ack_pending_counts_unlocked(config_path, snapshots)
                 return True
             except (OSError, ValueError, json.JSONDecodeError):
                 return False
@@ -461,6 +813,58 @@ class TeraboxClicker:
             getattr(self, "post_action_delay", DEFAULT_POST_ACTION_DELAY),
             minimum=0.0,
         )
+        defaults = self._optimization_defaults
+        self.local_verify = self._safe_bool(
+            source.get("local_verify"), defaults["local_verify"]
+        )
+        self.local_verify_margin = self._safe_int(
+            source.get("local_verify_margin", LOCAL_VERIFY_MARGIN),
+            LOCAL_VERIFY_MARGIN,
+            minimum=2,
+        )
+        self.local_verify_top_k = min(10, self._safe_int(
+            source.get("local_verify_top_k", LOCAL_VERIFY_TOP_K),
+            LOCAL_VERIFY_TOP_K,
+            minimum=1,
+        ))
+        self.dynamic_roi = self._safe_bool(
+            source.get("dynamic_roi"), True
+        )
+        self.roi_fullscreen_fallback = self._safe_bool(
+            source.get("roi_fullscreen_fallback"), True
+        )
+        self.frame_change_detection = self._safe_bool(
+            source.get("frame_change_detection"),
+            defaults["frame_change_detection"],
+        )
+        self.force_scan_interval = self._safe_number(
+            source.get("force_scan_interval", DEFAULT_FORCE_SCAN_INTERVAL),
+            DEFAULT_FORCE_SCAN_INTERVAL,
+            minimum=0.5,
+        )
+        self.adaptive_scan_interval = self._safe_bool(
+            source.get("adaptive_scan_interval"),
+            defaults["adaptive_scan_interval"],
+        )
+        self.max_idle_interval = self._safe_number(
+            source.get("max_idle_interval", DEFAULT_MAX_IDLE_INTERVAL),
+            DEFAULT_MAX_IDLE_INTERVAL,
+            minimum=0.1,
+        )
+        self.adaptive_template_order = self._safe_bool(
+            source.get("adaptive_template_order"),
+            defaults["adaptive_template_order"],
+        )
+        self.performance_metrics = self._safe_bool(
+            source.get("performance_metrics"),
+            defaults["performance_metrics"],
+        )
+        backend = str(
+            source.get("capture_backend", defaults["capture_backend"])
+        ).strip().lower()
+        self.capture_backend = (
+            backend if backend in VALID_CAPTURE_BACKENDS else DEFAULT_CAPTURE_BACKEND
+        )
 
         action = source.get("no_match_action")
         if action not in VALID_NO_MATCH_ACTIONS:
@@ -480,6 +884,22 @@ class TeraboxClicker:
         self.fallback_final_action = fb_action
         self.fallback_final_coords = self._safe_coords(
             source.get("fallback_final_coords"), self.fallback_final_coords
+        )
+        self.consecutive_match_threshold = self._safe_int(
+            source.get(
+                "consecutive_match_threshold",
+                getattr(
+                    self,
+                    "consecutive_match_threshold",
+                    DEFAULT_CONSECUTIVE_MATCH_THRESHOLD,
+                ),
+            ),
+            getattr(
+                self,
+                "consecutive_match_threshold",
+                DEFAULT_CONSECUTIVE_MATCH_THRESHOLD,
+            ),
+            minimum=0,
         )
 
     @staticmethod
@@ -588,19 +1008,8 @@ class TeraboxClicker:
             if isinstance(configured_address, str) and configured_address.strip():
                 self.device_address = configured_address.strip()
 
-        instances = config.get("instances", [])
-        target_instance = None
-        if isinstance(instances, list):
-            target_instance = next(
-                (
-                    instance
-                    for instance in instances
-                    if isinstance(instance, dict)
-                    and instance.get("device_address") == self.device_address
-                ),
-                None,
-            )
-        self._apply_settings(target_instance or config)
+        settings_source = dict(config)
+        self._apply_settings(settings_source)
 
         (
             self.template_order,
@@ -636,6 +1045,24 @@ class TeraboxClicker:
             "fallback_template_delay_types",
             self.fallback_template_dir,
         )
+        self.template_rois = {
+            filename: bounds
+            for filename, bounds in self._safe_rois(
+                config.get("template_rois", {})
+            ).items()
+            if filename in self.template_order
+        }
+        self.fallback_template_rois = {
+            filename: bounds
+            for filename, bounds in self._safe_rois(
+                config.get("fallback_template_rois", {})
+            ).items()
+            if filename in self.fallback_template_order
+        }
+        with self._hint_lock:
+            self._template_location_hints.clear()
+            self._template_hint_hits.clear()
+            self._roi_full_scan_times.clear()
 
         self.adb_path = get_default_adb_path(self.base_dir)
         return True
@@ -653,39 +1080,55 @@ class TeraboxClicker:
             "random_click_interval": self.random_click_interval,
             "double_click_interval": self.double_click_interval,
             "post_action_delay": self.post_action_delay,
+            "local_verify": self.local_verify,
+            "local_verify_margin": self.local_verify_margin,
+            "local_verify_top_k": self.local_verify_top_k,
+            "dynamic_roi": self.dynamic_roi,
+            "roi_fullscreen_fallback": self.roi_fullscreen_fallback,
+            "frame_change_detection": self.frame_change_detection,
+            "force_scan_interval": self.force_scan_interval,
+            "adaptive_scan_interval": self.adaptive_scan_interval,
+            "max_idle_interval": self.max_idle_interval,
+            "adaptive_template_order": self.adaptive_template_order,
+            "capture_backend": self.capture_backend,
+            "performance_metrics": self.performance_metrics,
             "no_match_action": self.no_match_action,
             "no_match_interval": self.no_match_interval,
             "no_match_coords": list(self.no_match_coords),
             "fallback_final_action": self.fallback_final_action,
             "fallback_final_coords": list(self.fallback_final_coords),
+            "consecutive_match_threshold": self.consecutive_match_threshold,
         }
 
     def save_config(self, include_templates=True):
         """Atomically save settings while preserving other instances and counts."""
         with self._config_lock:
             try:
-                self._flush_pending_counts_unlocked(self.config_path)
                 config = self._read_config_unlocked(self.config_path)
+                snapshots = self._merge_pending_counts_unlocked(
+                    self.config_path, config
+                )
                 settings = self._settings_dict()
                 config.update(settings)
 
                 instances = config.get("instances", [])
                 if not isinstance(instances, list):
                     instances = []
-                updated = False
-                for index, instance in enumerate(instances):
-                    if (
-                        isinstance(instance, dict)
-                        and instance.get("device_address") == self.device_address
-                    ):
-                        merged = dict(instance)
-                        merged.update(settings)
-                        instances[index] = merged
-                        updated = True
-                        break
-                if not updated:
-                    instances.append(dict(settings))
-                config["instances"] = instances
+                cleaned_instances = []
+                seen_addrs = set()
+                for inst in instances:
+                    if isinstance(inst, dict):
+                        addr = inst.get("device_address")
+                    elif isinstance(inst, str):
+                        addr = inst
+                    else:
+                        addr = None
+                    if addr and addr not in seen_addrs:
+                        seen_addrs.add(addr)
+                        cleaned_instances.append({"device_address": addr})
+                if self.device_address and self.device_address not in seen_addrs:
+                    cleaned_instances.append({"device_address": self.device_address})
+                config["instances"] = cleaned_instances
 
                 if include_templates:
                     template_groups = (
@@ -766,7 +1209,22 @@ class TeraboxClicker:
                             and delay_types.get(filename, "pre") == "post"
                         }
 
-                self._atomic_write_config_unlocked(self.config_path, config, do_fsync=False)
+                    config["template_rois"] = {
+                        filename: list(self.template_rois[filename])
+                        for filename in self.template_order
+                        if filename in self.template_rois
+                    }
+                    config["fallback_template_rois"] = {
+                        filename: list(self.fallback_template_rois[filename])
+                        for filename in self.fallback_template_order
+                        if filename in self.fallback_template_rois
+                    }
+                self._atomic_write_config_unlocked(
+                    self.config_path, config, do_fsync=False
+                )
+                self._ack_pending_counts_unlocked(
+                    self.config_path, snapshots
+                )
                 return True
             except (OSError, ValueError, json.JSONDecodeError) as error:
                 self.log(f"설정 저장 중 오류: {error}")
@@ -774,39 +1232,55 @@ class TeraboxClicker:
 
     @classmethod
     def preload_templates(cls, directories=None, grayscales=(False, True)):
-        """Preload all template images from directories into global memory cache."""
-        if directories is None:
-            directories = [
-                os.path.join(APP_DIR, TEMPLATE_DIR_NAME),
-                os.path.join(APP_DIR, FALLBACK_TEMPLATE_DIR_NAME),
-            ]
-        elif isinstance(directories, (str, bytes, os.PathLike)):
-            directories = [directories]
+        """Preload requested template modes once, including their coarse pyramids."""
+        with cls._preload_lock:
+            if directories is None:
+                directories = [
+                    os.path.join(APP_DIR, TEMPLATE_DIR_NAME),
+                    os.path.join(APP_DIR, FALLBACK_TEMPLATE_DIR_NAME),
+                ]
+            elif isinstance(directories, (str, bytes, os.PathLike)):
+                directories = [directories]
 
-        valid_dirs = []
-        for d in directories:
-            abs_d = os.path.abspath(d)
-            if os.path.isdir(abs_d) and abs_d not in valid_dirs:
-                valid_dirs.append(abs_d)
+            valid_dirs = []
+            for directory in directories:
+                absolute_dir = os.path.abspath(directory)
+                if os.path.isdir(absolute_dir) and absolute_dir not in valid_dirs:
+                    valid_dirs.append(absolute_dir)
 
-        loaded_count = 0
-        for directory in valid_dirs:
-            try:
-                for entry in os.scandir(directory):
-                    if entry.is_file() and entry.name.lower().endswith(
-                        (".png", ".jpg", ".jpeg", ".bmp", ".webp")
-                    ):
-                        abs_path = os.path.abspath(entry.path)
-                        for gray in grayscales:
-                            cache_key = (abs_path, bool(gray))
+            modes = tuple(dict.fromkeys(bool(gray) for gray in grayscales))
+            loaded_count = 0
+            for directory in valid_dirs:
+                try:
+                    entries = os.scandir(directory)
+                except OSError:
+                    continue
+                with entries:
+                    for entry in entries:
+                        if not entry.is_file() or not entry.name.lower().endswith(
+                            (".png", ".jpg", ".jpeg", ".bmp", ".webp")
+                        ):
+                            continue
+                        absolute_path = os.path.abspath(entry.path)
+                        for grayscale in modes:
+                            cache_key = (absolute_path, grayscale)
+                            template, _ = cls._load_template_direct(
+                                absolute_path, grayscale=grayscale
+                            )
+                            if template is None:
+                                continue
                             with cls._template_cache_lock:
-                                if cache_key in cls._template_cache:
+                                cached_scaled = cls._scaled_template_cache.get(
+                                    cache_key
+                                )
+                                if (
+                                    cached_scaled is not None
+                                    and cached_scaled[0] is template
+                                ):
                                     continue
-                            cls._load_template_direct(abs_path, grayscale=gray)
+                            cls._get_scaled_template(cache_key, template)
                             loaded_count += 1
-            except OSError:
-                pass
-        return loaded_count
+            return loaded_count
 
     @classmethod
     def _load_template_direct(cls, absolute_path, grayscale=False):
@@ -820,6 +1294,12 @@ class TeraboxClicker:
 
         use_grayscale = bool(grayscale)
         cache_key = (absolute_path, use_grayscale)
+        with cls._template_cache_lock:
+            cached = cls._template_cache.get(cache_key)
+            if cached is not None and cached[0] == signature:
+                return cached[1], cached[2]
+            if cached is not None:
+                cls._scaled_template_cache.pop(cache_key, None)
         try:
             encoded = np.fromfile(absolute_path, dtype=np.uint8)
             read_flag = cv2.IMREAD_GRAYSCALE if use_grayscale else cv2.IMREAD_COLOR
@@ -840,6 +1320,7 @@ class TeraboxClicker:
             template, method = None, None
 
         with cls._template_cache_lock:
+            cls._scaled_template_cache.pop(cache_key, None)
             cls._template_cache[cache_key] = (
                 signature,
                 template,
@@ -870,7 +1351,17 @@ class TeraboxClicker:
             self._live_counts[path_key][counts_key].pop(filename, None)
 
     def _delete_template(
-        self, filename, directory, order, counts, actions, offsets, delays, delay_types, counts_key
+        self,
+        filename,
+        directory,
+        order,
+        counts,
+        actions,
+        offsets,
+        delays,
+        delay_types,
+        rois,
+        counts_key,
     ):
         if not isinstance(filename, str) or os.path.basename(filename) != filename:
             self.log(f"잘못된 템플릿 파일명: {filename}")
@@ -888,6 +1379,8 @@ class TeraboxClicker:
             offsets.pop(filename, None)
             delays.pop(filename, None)
             delay_types.pop(filename, None)
+            rois.pop(filename, None)
+            self._discard_location_hint(file_path)
             self._remove_count_state(filename, counts_key)
             self.invalidate_template_cache(file_path)
             return self.save_config(include_templates=True)
@@ -905,6 +1398,7 @@ class TeraboxClicker:
             self.template_offsets,
             self.template_delays,
             self.template_delay_types,
+            self.template_rois,
             "template_counts",
         )
 
@@ -918,6 +1412,7 @@ class TeraboxClicker:
             self.fallback_template_offsets,
             self.fallback_template_delays,
             self.fallback_template_delay_types,
+            self.fallback_template_rois,
             "fallback_template_counts",
         )
 
@@ -1010,14 +1505,43 @@ class TeraboxClicker:
             self._pending_count_deltas[path_key][counts_key][filename] += 1
             self._schedule_count_flush_unlocked(path_key)
 
+        if self.consecutive_match_template == filename:
+            self.consecutive_match_count += 1
+        else:
+            self.consecutive_match_template = filename
+            self.consecutive_match_count = 1
+            self._consecutive_alert_triggered = False
+
+        current_state = (bool(is_fallback), filename)
+        if self.last_matched_template:
+            previous_state = (
+                bool(self.last_matched_is_fallback),
+                self.last_matched_template,
+            )
+            self._transition_counts[previous_state][current_state] += 1
         self.last_matched_template = filename
         self.last_matched_is_fallback = is_fallback
+        self._mark_screen_dirty()
 
         if self.on_match_callback:
             try:
                 self.on_match_callback(filename, new_count, is_fallback)
             except Exception as error:
                 self.log(f"매칭 콜백 오류: {error}")
+
+        if (
+            self.consecutive_match_threshold > 0
+            and self.consecutive_match_count >= self.consecutive_match_threshold
+            and not self._consecutive_alert_triggered
+        ):
+            self._consecutive_alert_triggered = True
+            if self.on_consecutive_match_callback:
+                try:
+                    self.on_consecutive_match_callback(
+                        filename, self.consecutive_match_count
+                    )
+                except Exception as error:
+                    self.log(f"연속 매칭 경고 콜백 오류: {error}")
         return new_count
 
     def get_timers_status(self):
@@ -1042,6 +1566,9 @@ class TeraboxClicker:
                 if self.last_matched_template
                 else None
             ),
+            "consecutive_match_count": self.consecutive_match_count,
+            "consecutive_match_template": self.consecutive_match_template,
+            "consecutive_match_threshold": self.consecutive_match_threshold,
         }
 
     def _execute_action(self, action, x=None, y=None):
@@ -1051,15 +1578,58 @@ class TeraboxClicker:
             return self.double_click(x, y)
         return self.click(x, y)
 
+    def _operation_cancelled(self):
+        active_cancel = self._active_loop_cancel_event
+        return (
+            self._shutdown_event.is_set()
+            or (
+                self._automatic_loop_active
+                and (
+                    self._stop_event.is_set()
+                    or (
+                        active_cancel is not None
+                        and active_cancel.is_set()
+                    )
+                )
+            )
+        )
+
     def _wait_after_action(self, seconds):
-        if self.is_running:
-            return not self._stop_event.wait(seconds)
-        time.sleep(seconds)
-        return True
+        seconds = max(0.0, float(seconds))
+        if self._operation_cancelled():
+            return False
+        wait_event = (
+            self._stop_event
+            if self._automatic_loop_active
+            else self._shutdown_event
+        )
+        active_cancel = (
+            self._active_loop_cancel_event
+            if self._automatic_loop_active
+            else None
+        )
+        if active_cancel is None:
+            return not wait_event.wait(seconds)
+
+        deadline = time.monotonic() + seconds
+        while True:
+            if (
+                self._shutdown_event.is_set()
+                or wait_event.is_set()
+                or active_cancel.is_set()
+            ):
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            if wait_event.wait(min(0.1, remaining)):
+                return False
 
     def _try_fallback_templates(self, screen, now, _prescaled_screen=None):
-        for filename in tuple(self.fallback_template_order):
-            if self.is_running and self._stop_event.is_set():
+        for filename in self._get_template_scan_order(
+            self.fallback_template_order, is_fallback=True
+        ):
+            if self._automatic_loop_active and self._stop_event.is_set():
                 return False
             template_path = os.path.join(self.fallback_template_dir, filename)
             match = self.find_template(
@@ -1068,8 +1638,11 @@ class TeraboxClicker:
                 threshold=self.similarity_threshold,
                 filename=filename,
                 offsets_dict=self.fallback_template_offsets,
+                rois_dict=self.fallback_template_rois,
                 _prescaled_screen=_prescaled_screen,
             )
+            if self._automatic_loop_active and self._stop_event.is_set():
+                return False
             if match is None:
                 continue
 
@@ -1087,6 +1660,8 @@ class TeraboxClicker:
                 if not self._wait_after_action(delay):
                     return False
 
+            if self._automatic_loop_active and self._stop_event.is_set():
+                return False
             success = self._execute_action(action, x, y)
             self.log(
                 f"⚡ [미매칭 복구] 액션 완료: {filename} "
@@ -1109,6 +1684,9 @@ class TeraboxClicker:
         return False
 
     def _handle_no_match_action(self, screen, now, _prescaled_screen=None):
+        if self._automatic_loop_active and self._stop_event.is_set():
+            return
+
         if self.no_match_action == "none" or self.no_match_interval <= 0:
             return
 
@@ -1129,7 +1707,21 @@ class TeraboxClicker:
                     f"⚡ [미매칭 복구] 매칭 없음 ({int(elapsed_since_match)}초 경과) "
                     f"-> 미매칭 복구 템플릿({count}개) 검사 시도"
                 )
+                if _prescaled_screen is None:
+                    preprocess_started = time.perf_counter()
+                    _prescaled_screen = cv2.resize(
+                        screen,
+                        None,
+                        fx=PRESCALE_FACTOR,
+                        fy=PRESCALE_FACTOR,
+                        interpolation=cv2.INTER_AREA,
+                    )
+                    self._record_performance(
+                        "preprocess.fallback", preprocess_started
+                    )
                 matched = self._try_fallback_templates(screen, now, _prescaled_screen=_prescaled_screen)
+                if self._automatic_loop_active and self._stop_event.is_set():
+                    return
             else:
                 self.log(
                     f"⚡ [미매칭 복구] {int(elapsed_since_match)}초 경과 (등록된 미매칭 템플릿 없음)"
@@ -1148,6 +1740,9 @@ class TeraboxClicker:
                         f"-> {int(self.no_match_interval)}초 후 재시도"
                     )
                     self.last_random_click_time = time.monotonic()
+            return
+
+        if self._automatic_loop_active and self._stop_event.is_set():
             return
 
         success = False
@@ -1194,6 +1789,9 @@ class TeraboxClicker:
                 self._wait_after_action(self.post_action_delay)
 
     def _execute_final_action(self, screen, final_action):
+        if self._operation_cancelled():
+            return False
+
         height, width = screen.shape[:2]
         if final_action == "random_click":
             min_x, max_x = int(width * 0.15), max(0, int(width * 0.85))
@@ -1231,25 +1829,52 @@ class TeraboxClicker:
         return False
 
     def run_once(self):
-        """Capture once, scan templates in priority order, and perform one action."""
+        """Capture once, scan templates, and perform at most one action."""
+        cycle_started = time.perf_counter()
         screen = self.capture_screen()
+        if self._automatic_loop_active and self._stop_event.is_set():
+            return False
         if screen is None:
+            self._force_full_scan = True
             self.log("화면 캡처 실패")
+            self._record_performance("scan.total", cycle_started)
             return False
 
+        preprocess_started = time.perf_counter()
         if self.match_grayscale and screen.ndim == 3:
             screen = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-
-        # Pre-compute downscaled screen once for all templates
-        prescaled = cv2.resize(
-            screen, None,
-            fx=PRESCALE_FACTOR, fy=PRESCALE_FACTOR,
-            interpolation=cv2.INTER_AREA,
-        )
-
         now = time.monotonic()
-        for filename in tuple(self.template_order):
-            if self.is_running and self._stop_event.is_set():
+        if not self._should_scan_frame(screen, now):
+            self._record_performance("preprocess", preprocess_started)
+            if self._automatic_loop_active and self._stop_event.is_set():
+                return False
+            self._handle_no_match_action(screen, time.monotonic())
+            self._record_performance("scan.skipped", cycle_started)
+            return False
+
+        prescaled_cache = [None]
+        self._record_performance("preprocess", preprocess_started)
+
+        def get_prescaled_screen():
+            if prescaled_cache[0] is None:
+                prescale_started = time.perf_counter()
+                prescaled_cache[0] = cv2.resize(
+                    screen,
+                    None,
+                    fx=PRESCALE_FACTOR,
+                    fy=PRESCALE_FACTOR,
+                    interpolation=cv2.INTER_AREA,
+                )
+                self._record_performance(
+                    "preprocess.prescale", prescale_started
+                )
+            return prescaled_cache[0]
+
+        scan_order = self._get_template_scan_order(
+            self.template_order, is_fallback=False
+        )
+        for filename in scan_order:
+            if self._automatic_loop_active and self._stop_event.is_set():
                 return False
             template_path = os.path.join(self.template_dir, filename)
             match = self.find_template(
@@ -1257,16 +1882,20 @@ class TeraboxClicker:
                 template_path,
                 threshold=self.similarity_threshold,
                 filename=filename,
-                _prescaled_screen=prescaled,
+                rois_dict=self.template_rois,
+                _prescaled_screen=get_prescaled_screen,
             )
+            if self._automatic_loop_active and self._stop_event.is_set():
+                return False
             if match is None:
                 continue
 
+            self._last_scan_had_match = True
             x, y, confidence = match
             action = self.template_actions.get(filename, "click")
             delay = self.template_delays.get(filename, 0.0)
             delay_type = self.template_delay_types.get(filename, "pre")
-            self.last_match_time = now
+            self.last_match_time = time.monotonic()
 
             if delay > 0 and delay_type == "pre":
                 self.log(
@@ -1276,7 +1905,11 @@ class TeraboxClicker:
                 if not self._wait_after_action(delay):
                     return False
 
+            if self._automatic_loop_active and self._stop_event.is_set():
+                return False
+            action_started = time.perf_counter()
             success = self._execute_action(action, x, y)
+            self._record_performance("action", action_started)
             self.log(
                 f"액션 완료: {filename} "
                 f"(유사도: {confidence:.2f}, 액션: {action}, 좌표: {x},{y})"
@@ -1287,16 +1920,30 @@ class TeraboxClicker:
                 self._timeout_alert_active = False
                 self._record_match(filename)
 
-            post_wait = delay if (delay > 0 and delay_type == "post") else self.post_action_delay
+            self._record_performance("scan.total", cycle_started)
+            post_wait = (
+                delay
+                if delay > 0 and delay_type == "post"
+                else self.post_action_delay
+            )
             if post_wait > 0:
                 if delay > 0 and delay_type == "post":
                     self.log(
-                        f"⏱️ [{filename}] [동작 후] 다음 매칭 전 {post_wait:g}초 대기 중..."
+                        f"⏱️ [{filename}] [동작 후] 다음 매칭 전 "
+                        f"{post_wait:g}초 대기 중..."
                     )
                 self._wait_after_action(post_wait)
             return True
 
-        self._handle_no_match_action(screen, now, _prescaled_screen=prescaled)
+        if self._automatic_loop_active and self._stop_event.is_set():
+            return False
+        self._last_scan_had_match = False
+        self._handle_no_match_action(
+            screen,
+            time.monotonic(),
+            _prescaled_screen=get_prescaled_screen,
+        )
+        self._record_performance("scan.total", cycle_started)
         return False
 
     def execute_template(self, filename, is_fallback=False):
@@ -1337,12 +1984,18 @@ class TeraboxClicker:
             else self.template_delays
         )
 
+        rois_dict = (
+            self.fallback_template_rois
+            if is_fallback
+            else self.template_rois
+        )
         match = self.find_template(
             screen,
             template_path,
             threshold=self.similarity_threshold,
             filename=filename,
             offsets_dict=offsets_dict,
+            rois_dict=rois_dict,
         )
 
         prefix = "⚡ [미매칭 더블클릭]" if is_fallback else "🎯 [더블클릭 실행]"
@@ -1394,7 +2047,7 @@ class TeraboxClicker:
 
     def _run_adb(self, args, timeout=ADB_COMMAND_TIMEOUT, check=False, text=True):
         return subprocess.run(
-            [self.adb_path, *args],
+            [self.adb_path, "-H", str(self.host), "-P", str(self.port), *args],
             check=check,
             capture_output=True,
             text=text,
@@ -1502,34 +2155,44 @@ class TeraboxClicker:
             self.log(f"ADB 서버 시작 시도: {self.adb_path}")
             try:
                 self._run_adb(["start-server"], check=True)
+                if self._operation_cancelled():
+                    return False
                 if ":" in self.device_address:
                     self._run_adb(
                         ["connect", self.device_address], timeout=3.0
                     )
+                    if self._operation_cancelled():
+                        return False
 
-                client = AdbClient(host=self.host, port=self.port)
-                target = next(
-                    (
-                        device
-                        for device in client.devices()
-                        if device.serial == self.device_address
-                    ),
-                    None,
+                result = self._run_adb(["devices"], check=True)
+                if self._operation_cancelled():
+                    return False
+                online_serials = {
+                    parts[0]
+                    for line in result.stdout.splitlines()[1:]
+                    for parts in (line.strip().split(),)
+                    if len(parts) >= 2 and parts[1] == "device"
+                }
+                target_serial = (
+                    self.device_address
+                    if self.device_address in online_serials
+                    else None
                 )
-                if target is None and ":" in self.device_address:
+                if target_serial is None and ":" in self.device_address:
                     try:
                         port = int(self.device_address.split(":")[-1])
                         emu_serial = f"emulator-{port - 1}"
-                        target = next(
-                            (
-                                device
-                                for device in client.devices()
-                                if device.serial == emu_serial
-                            ),
-                            None,
-                        )
+                        if emu_serial in online_serials:
+                            target_serial = emu_serial
                     except ValueError:
                         pass
+
+                client = AdbClient(host=self.host, port=self.port)
+                target = (
+                    AdbDevice(client, target_serial)
+                    if target_serial is not None
+                    else None
+                )
 
                 self.client = client
                 self.device = target
@@ -1539,6 +2202,9 @@ class TeraboxClicker:
                     )
                     return False
 
+                self._next_reconnect_at = 0.0
+                self._reconnect_delay = 1.0
+                self._loop_wake_event.set()
                 self.log(f"장치 연결 성공: {self.device_address}")
                 return True
             except (OSError, subprocess.SubprocessError, RuntimeError) as error:
@@ -1558,47 +2224,208 @@ class TeraboxClicker:
             self.device = None
             self.client = None
 
-    def capture_screen(self, grayscale=None):
-        """Capture screen via subprocess exec-out screencap -p (faster than ppadb)."""
-        if self.device is None and not self.start_adb_server():
+    @staticmethod
+    def _decode_png_screencap(payload, use_grayscale):
+        if not payload:
             return None
+        read_flag = cv2.IMREAD_GRAYSCALE if use_grayscale else cv2.IMREAD_COLOR
+        return cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), read_flag)
+
+    @staticmethod
+    def _decode_raw_screencap(payload, use_grayscale):
+        """Decode Android screencap raw output with 12- or 16-byte headers."""
+        if not payload or len(payload) < 12:
+            return None
+        try:
+            width, height, pixel_format = struct.unpack_from("<III", payload, 0)
+        except struct.error:
+            return None
+        if not (0 < width <= 16384 and 0 < height <= 16384):
+            return None
+        bytes_per_pixel = {1: 4, 2: 4, 3: 3, 4: 2, 5: 4}.get(pixel_format)
+        if bytes_per_pixel is None:
+            return None
+
+        minimum_row_bytes = width * bytes_per_pixel
+        candidates = []
+        for header_size in (12, 16):
+            remaining = len(payload) - header_size
+            if remaining < minimum_row_bytes * height or remaining % height:
+                continue
+            row_bytes = remaining // height
+            if minimum_row_bytes <= row_bytes <= minimum_row_bytes + 16384:
+                candidates.append((row_bytes, header_size))
+        if not candidates:
+            return None
+        row_bytes, header_size = min(candidates)
+        flat = np.frombuffer(
+            payload,
+            dtype=np.uint8,
+            count=row_bytes * height,
+            offset=header_size,
+        ).reshape(height, row_bytes)
+        pixels = flat[:, :minimum_row_bytes].reshape(
+            height, width, bytes_per_pixel
+        )
+        if pixel_format in (1, 2):
+            code = cv2.COLOR_RGBA2GRAY if use_grayscale else cv2.COLOR_RGBA2BGR
+        elif pixel_format == 3:
+            code = cv2.COLOR_RGB2GRAY if use_grayscale else cv2.COLOR_RGB2BGR
+        elif pixel_format == 4:
+            code = cv2.COLOR_BGR5652GRAY if use_grayscale else cv2.COLOR_BGR5652BGR
+        else:
+            code = cv2.COLOR_BGRA2GRAY if use_grayscale else cv2.COLOR_BGRA2BGR
+        return cv2.cvtColor(pixels, code)
+
+    @staticmethod
+    def _is_local_device_serial(serial):
+        serial = str(serial).strip().lower()
+        return (
+            serial.startswith("emulator-")
+            or serial.startswith("127.0.0.1:")
+            or serial.startswith("localhost:")
+        )
+
+    def _capture_exec_backend(self, serial, backend, use_grayscale):
+        command = [
+            self.adb_path,
+            "-H",
+            str(self.host),
+            "-P",
+            str(self.port),
+            "-s",
+            serial,
+            "exec-out",
+            "screencap",
+        ]
+        if backend == "png":
+            command.append("-p")
+        started_at = time.perf_counter()
+        try:
+            proc = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=ADB_COMMAND_TIMEOUT,
+                **self._subprocess_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            self._record_performance("capture.exec", started_at)
+            return None, "transport"
+        self._record_performance("capture.exec", started_at)
+        if proc.returncode != 0 or not proc.stdout:
+            return None, "transport"
+
+        decode_started = time.perf_counter()
+        if backend == "raw":
+            image = self._decode_raw_screencap(proc.stdout, use_grayscale)
+        else:
+            image = self._decode_png_screencap(proc.stdout, use_grayscale)
+        self._record_performance("capture.decode", decode_started)
+        return image, None if image is not None else "decode"
+
+    def _capture_ppadb_backend(self, device, use_grayscale):
+        """Use ppadb transport with a real socket timeout for PNG fallback."""
+        connection = device.create_connection(timeout=ADB_COMMAND_TIMEOUT)
+        with connection:
+            connection.send("shell:/system/bin/screencap -p")
+            payload = bytes(connection.read_all())
+        if payload and len(payload) > 5 and payload[5] == 0x0D:
+            payload = payload.replace(b"\r\n", b"\n")
+        return self._decode_png_screencap(payload, use_grayscale)
+
+    def capture_screen(self, grayscale=None):
+        """Capture with local raw fast path, PNG fallback and backend cooldown."""
+        if self._operation_cancelled():
+            return None
+
+        total_started = time.perf_counter()
+        now = time.monotonic()
+        if self.device is None:
+            if now < self._next_reconnect_at:
+                return None
+            if not self.start_adb_server():
+                self._next_reconnect_at = time.monotonic() + self._reconnect_delay
+                self._reconnect_delay = min(10.0, self._reconnect_delay * 2.0)
+                return None
+            if self._operation_cancelled():
+                return None
+            self._next_reconnect_at = 0.0
+            self._reconnect_delay = 1.0
 
         with self._device_lock:
             device = self.device
         if device is None:
             return None
 
-        try:
-            proc = subprocess.run(
-                [self.adb_path, "-s", self.device_address,
-                 "exec-out", "screencap", "-p"],
-                capture_output=True,
-                timeout=ADB_COMMAND_TIMEOUT,
-                **self._subprocess_kwargs(),
-            )
-            if proc.returncode != 0 or not proc.stdout:
-                # Fallback to ppadb screencap if exec-out fails
-                result = device.screencap()
-                if not result:
-                    return None
-                raw = result
-            else:
-                raw = proc.stdout
-            use_gray = self.match_grayscale if grayscale is None else bool(grayscale)
-            read_flag = cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR
-            image = cv2.imdecode(
-                np.frombuffer(raw, dtype=np.uint8), read_flag
-            )
-            if image is None:
-                self.log("화면 캡처 이미지 디코딩 실패")
-            return image
-        except Exception as error:
-            self.log(f"화면 캡처 중 오류: {error}")
-            with self._device_lock:
-                if self.device is device:
-                    self.device = None
-            return None
+        configured_serial = self.device_address
+        device_serial = getattr(device, "serial", None)
+        serial = (
+            device_serial.strip()
+            if isinstance(device_serial, str) and device_serial.strip()
+            else configured_serial
+        )
+        use_grayscale = (
+            self.match_grayscale if grayscale is None else bool(grayscale)
+        )
+        image = None
+        failure_kind = None
 
+        exec_attempted = False
+        if now >= self._exec_out_disabled_until:
+            exec_attempted = True
+            backends = []
+            wants_raw = self.capture_backend == "raw" or (
+                self.capture_backend == "auto"
+                and self._is_local_device_serial(serial)
+            )
+            if wants_raw and now >= self._raw_capture_disabled_until:
+                backends.append("raw")
+            backends.append("png")
+            for backend in dict.fromkeys(backends):
+                if self._operation_cancelled():
+                    return None
+                image, failure_kind = self._capture_exec_backend(
+                    serial, backend, use_grayscale
+                )
+                if self._operation_cancelled():
+                    return None
+                if image is not None:
+                    self._exec_out_failure_count = 0
+                    self._exec_out_disabled_until = 0.0
+                    break
+                if backend == "raw" and failure_kind == "decode":
+                    self._raw_capture_disabled_until = time.monotonic() + 60.0
+                    continue
+                if failure_kind == "transport":
+                    break
+
+        if image is None:
+            if exec_attempted:
+                self._exec_out_failure_count += 1
+                cooldown = min(30.0, 2.0 ** min(self._exec_out_failure_count, 4))
+                self._exec_out_disabled_until = time.monotonic() + cooldown
+            if self._operation_cancelled():
+                return None
+            fallback_started = time.perf_counter()
+            try:
+                image = self._capture_ppadb_backend(device, use_grayscale)
+            except Exception:
+                image = None
+            self._record_performance("capture.ppadb", fallback_started)
+
+        if self._operation_cancelled():
+            return None
+        self._record_performance("capture.total", total_started)
+        if image is not None:
+            return image
+
+        self.log("화면 캡처 실패: exec-out 및 ADB fallback 모두 실패")
+        with self._device_lock:
+            if self.device is device:
+                self.device = None
+        self._next_reconnect_at = time.monotonic() + self._reconnect_delay
+        self._reconnect_delay = min(10.0, self._reconnect_delay * 2.0)
+        return None
     def _load_template(self, template_path, grayscale=None):
         absolute_path = os.path.abspath(template_path)
         use_grayscale = (
@@ -1609,7 +2436,13 @@ class TeraboxClicker:
         # 1. Fast Lock-Free Read from global preloaded cache
         cached = self._template_cache.get(cache_key)
         if cached is not None:
-            return cached[1], cached[2]
+            try:
+                stat = os.stat(absolute_path)
+                signature = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                signature = None
+            if cached[0] == signature:
+                return cached[1], cached[2]
 
         # 2. If not cached, load and decode on demand
         template, method = self._load_template_direct(
@@ -1619,22 +2452,265 @@ class TeraboxClicker:
             self.log(f"템플릿 로드 실패 ({template_path})")
         return template, method
 
-    def _get_scaled_template(self, cache_key, template):
-        """Return a downscaled template for pre-filter matching, cached."""
-        scaled = self._scaled_template_cache.get(cache_key)
-        if scaled is not None:
+    @classmethod
+    def _get_scaled_template(cls, cache_key, template):
+        """Return a coarse template tied to the exact decoded source object."""
+        with cls._template_cache_lock:
+            cached = cls._scaled_template_cache.get(cache_key)
+            if cached is not None and cached[0] is template:
+                return cached[1]
+
+        height, width = template.shape[:2]
+        if height < PRESCALE_MIN_TEMPLATE_DIM or width < PRESCALE_MIN_TEMPLATE_DIM:
+            scaled = None
+        else:
+            scaled = cv2.resize(
+                template,
+                None,
+                fx=PRESCALE_FACTOR,
+                fy=PRESCALE_FACTOR,
+                interpolation=cv2.INTER_AREA,
+            )
+        with cls._template_cache_lock:
+            cached = cls._scaled_template_cache.get(cache_key)
+            if cached is not None and cached[0] is template:
+                return cached[1]
+
+            current = cls._template_cache.get(cache_key)
+            if current is not None and current[1] is not template:
+                return scaled
+
+            cls._scaled_template_cache[cache_key] = (template, scaled)
             return scaled
-        h, w = template.shape[:2]
-        if h < PRESCALE_MIN_TEMPLATE_DIM or w < PRESCALE_MIN_TEMPLATE_DIM:
-            self._scaled_template_cache[cache_key] = None
+
+    @staticmethod
+    def _score_location(method, min_value, max_value, min_location, max_location):
+        if method == cv2.TM_SQDIFF_NORMED:
+            return 1.0 - min_value, min_location
+        return max_value, max_location
+
+    def _run_match_map(self, image, template, method, stage):
+        started_at = time.perf_counter()
+        result = cv2.matchTemplate(image, template, method)
+        values = cv2.minMaxLoc(result)
+        self._record_performance(stage, started_at)
+        confidence, location = self._score_location(method, *values)
+        return result, float(confidence), location
+
+    @staticmethod
+    def _coarse_candidates(result, template_shape, method, threshold, limit):
+        """Extract separated coarse peaks in descending confidence order."""
+        candidates = []
+        template_height, template_width = template_shape[:2]
+        suppress_x = max(1, template_width // 2)
+        suppress_y = max(1, template_height // 2)
+        for _ in range(max(1, int(limit))):
+            values = cv2.minMaxLoc(result)
+            confidence, location = TeraboxClicker._score_location(method, *values)
+            if not math.isfinite(confidence) or confidence < threshold:
+                break
+            candidates.append((location, float(confidence)))
+            x, y = location
+            x0 = max(0, x - suppress_x)
+            y0 = max(0, y - suppress_y)
+            x1 = min(result.shape[1], x + suppress_x + 1)
+            y1 = min(result.shape[0], y + suppress_y + 1)
+            result[y0:y1, x0:x1] = (
+                1.0 if method == cv2.TM_SQDIFF_NORMED else -1.0
+            )
+        return candidates
+
+    def _match_region(self, screen, template, method, threshold, bounds, stage):
+        left, top, right, bottom = bounds
+        region = screen[top:bottom, left:right]
+        template_height, template_width = template.shape[:2]
+        if (
+            region.shape[0] < template_height
+            or region.shape[1] < template_width
+        ):
             return None
-        small = cv2.resize(
-            template, None,
-            fx=PRESCALE_FACTOR, fy=PRESCALE_FACTOR,
-            interpolation=cv2.INTER_AREA,
+        _, confidence, location = self._run_match_map(
+            region, template, method, stage
         )
-        self._scaled_template_cache[cache_key] = small
-        return small
+        if not math.isfinite(confidence) or confidence < threshold:
+            return None
+        return left + location[0], top + location[1], confidence
+
+    @staticmethod
+    def _normalized_roi_bounds(bounds, screen_shape, template_shape):
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+            return None
+        screen_height, screen_width = screen_shape[:2]
+        template_height, template_width = template_shape[:2]
+        left = max(0, min(screen_width, int(math.floor(bounds[0] * screen_width))))
+        top = max(0, min(screen_height, int(math.floor(bounds[1] * screen_height))))
+        right = max(0, min(screen_width, int(math.ceil(bounds[2] * screen_width))))
+        bottom = max(0, min(screen_height, int(math.ceil(bounds[3] * screen_height))))
+        if right - left < template_width or bottom - top < template_height:
+            return None
+        return left, top, right, bottom
+
+    def _discard_location_hint(self, template_path):
+        absolute_path = os.path.abspath(template_path)
+        with self._hint_lock:
+            self._template_location_hints.pop(absolute_path, None)
+            self._template_hint_hits.pop(absolute_path, None)
+            self._roi_full_scan_times.pop(absolute_path, None)
+
+    def _remember_location_hint(
+        self, template_path, screen_shape, left, top, width, height, hint_hit
+    ):
+        absolute_path = os.path.abspath(template_path)
+        with self._hint_lock:
+            self._template_location_hints[absolute_path] = (
+                tuple(screen_shape[:2]), left, top, width, height
+            )
+            if hint_hit:
+                self._template_hint_hits[absolute_path] += 1
+            else:
+                self._template_hint_hits[absolute_path] = 0
+
+    def _roi_full_scan_due(self, template_path):
+        if not self._automatic_loop_active or not self.frame_change_detection:
+            return True
+        absolute_path = os.path.abspath(template_path)
+        now = time.monotonic()
+        with self._hint_lock:
+            last_scan = self._roi_full_scan_times.get(absolute_path, 0.0)
+            if now - last_scan < self.force_scan_interval:
+                return False
+            self._roi_full_scan_times[absolute_path] = now
+        return True
+
+    def _hint_bounds(self, template_path, screen_shape):
+        absolute_path = os.path.abspath(template_path)
+        with self._hint_lock:
+            if (
+                self._template_hint_hits.get(absolute_path, 0)
+                >= HINT_FULL_SCAN_INTERVAL - 1
+            ):
+                return None
+            hint = self._template_location_hints.get(absolute_path)
+        if not hint:
+            return None
+        saved_shape, left, top, width, height = hint
+        if tuple(saved_shape) != tuple(screen_shape[:2]):
+            self._discard_location_hint(absolute_path)
+            return None
+        screen_height, screen_width = screen_shape[:2]
+        margin = max(
+            self.local_verify_margin,
+            min(96, max(width, height) // 3),
+        )
+        return (
+            max(0, left - margin),
+            max(0, top - margin),
+            min(screen_width, left + width + margin),
+            min(screen_height, top + height + margin),
+        )
+
+    def _find_in_region(
+        self,
+        screen,
+        template,
+        method,
+        threshold,
+        cache_key,
+        bounds,
+        prescaled_screen=None,
+        allow_full_fallback=True,
+    ):
+        left, top, right, bottom = bounds
+        template_height, template_width = template.shape[:2]
+        region_height = bottom - top
+        region_width = right - left
+        if region_height < template_height or region_width < template_width:
+            return None
+
+        small_template = self._get_scaled_template(cache_key, template)
+        if small_template is None:
+            return self._match_region(
+                screen, template, method, threshold, bounds, "match.full"
+            )
+
+        is_full_screen = (
+            left == 0
+            and top == 0
+            and right == screen.shape[1]
+            and bottom == screen.shape[0]
+        )
+        if is_full_screen and prescaled_screen is not None:
+            small_screen = (
+                prescaled_screen()
+                if callable(prescaled_screen)
+                else prescaled_screen
+            )
+        else:
+            small_screen = cv2.resize(
+                screen[top:bottom, left:right],
+                None,
+                fx=PRESCALE_FACTOR,
+                fy=PRESCALE_FACTOR,
+                interpolation=cv2.INTER_AREA,
+            )
+
+        if (
+            small_screen.shape[0] < small_template.shape[0]
+            or small_screen.shape[1] < small_template.shape[1]
+        ):
+            return None
+
+        coarse_result, coarse_confidence, _ = self._run_match_map(
+            small_screen, small_template, method, "match.coarse"
+        )
+        coarse_threshold = max(0.0, threshold * 0.8)
+        if (
+            not math.isfinite(coarse_confidence)
+            or coarse_confidence < coarse_threshold
+        ):
+            return None
+
+        if self.local_verify:
+            candidates = self._coarse_candidates(
+                coarse_result,
+                small_template.shape,
+                method,
+                coarse_threshold,
+                self.local_verify_top_k,
+            )
+            scale_x = region_width / float(small_screen.shape[1])
+            scale_y = region_height / float(small_screen.shape[0])
+            best_match = None
+            margin = self.local_verify_margin
+            for location, _ in candidates:
+                estimated_left = left + int(round(location[0] * scale_x))
+                estimated_top = top + int(round(location[1] * scale_y))
+                candidate_bounds = (
+                    max(left, estimated_left - margin),
+                    max(top, estimated_top - margin),
+                    min(right, estimated_left + template_width + margin),
+                    min(bottom, estimated_top + template_height + margin),
+                )
+                match = self._match_region(
+                    screen,
+                    template,
+                    method,
+                    threshold,
+                    candidate_bounds,
+                    "match.local",
+                )
+                if match is not None and (
+                    best_match is None or match[2] > best_match[2]
+                ):
+                    best_match = match
+            if best_match is not None:
+                return best_match
+
+        if allow_full_fallback:
+            return self._match_region(
+                screen, template, method, threshold, bounds, "match.full"
+            )
+        return None
 
     def find_template(
         self,
@@ -1643,9 +2719,10 @@ class TeraboxClicker:
         threshold=None,
         filename=None,
         offsets_dict=None,
+        rois_dict=None,
         _prescaled_screen=None,
     ):
-        """Find a cached template using 2-stage matching (downscale pre-filter + full-res)."""
+        """Find a cached template using hints, ROI, coarse peaks and local verify."""
         if screen_img is None or not isinstance(screen_img, np.ndarray):
             return None
         use_grayscale = bool(self.match_grayscale)
@@ -1663,61 +2740,109 @@ class TeraboxClicker:
             minimum=0.0,
             maximum=1.0,
         )
-        template, method = self._load_template(template_path, grayscale=use_grayscale)
+        template, method = self._load_template(
+            template_path, grayscale=use_grayscale
+        )
         if template is None:
             return None
-        th, tw = template.shape[:2]
-        sh, sw = screen_img.shape[:2]
-        if sh < th or sw < tw:
+        template_height, template_width = template.shape[:2]
+        screen_height, screen_width = screen_img.shape[:2]
+        if screen_height < template_height or screen_width < template_width:
             return None
 
+        absolute_path = os.path.abspath(template_path)
+        cache_key = (absolute_path, use_grayscale)
+        full_bounds = (0, 0, screen_width, screen_height)
+        match = None
+        hint_hit = False
+        target_rois = (
+            rois_dict if isinstance(rois_dict, dict) else self.template_rois
+        )
+        has_configured_roi = bool(
+            filename and filename in target_rois
+        )
+        configured_bounds = None
+        if has_configured_roi:
+            configured_bounds = self._normalized_roi_bounds(
+                target_rois[filename], screen_img.shape, template.shape
+            )
+            if configured_bounds is None and not self.roi_fullscreen_fallback:
+                return None
         try:
-            # Stage 1: Downscaled pre-filter (skip for small templates)
-            use_prescale = (
-                th >= PRESCALE_MIN_TEMPLATE_DIM
-                and tw >= PRESCALE_MIN_TEMPLATE_DIM
-            )
-            if use_prescale:
-                abs_path = os.path.abspath(template_path)
-                scale_key = (abs_path, use_grayscale)
-                small_tmpl = self._get_scaled_template(scale_key, template)
-                if small_tmpl is not None:
-                    if _prescaled_screen is None:
-                        _prescaled_screen = cv2.resize(
-                            screen_img, None,
-                            fx=PRESCALE_FACTOR, fy=PRESCALE_FACTOR,
-                            interpolation=cv2.INTER_AREA,
-                        )
-                    sth, stw = small_tmpl.shape[:2]
-                    if _prescaled_screen.shape[0] >= sth and _prescaled_screen.shape[1] >= stw:
-                        pre_result = cv2.matchTemplate(
-                            _prescaled_screen, small_tmpl, method
-                        )
-                        pre_min, pre_max, pre_min_loc, pre_max_loc = cv2.minMaxLoc(pre_result)
-                        if method == cv2.TM_SQDIFF_NORMED:
-                            pre_conf = 1.0 - pre_min
-                        else:
-                            pre_conf = pre_max
-                        pre_threshold = max(0.0, threshold * 0.8)
-                        if not math.isfinite(pre_conf) or pre_conf < pre_threshold:
-                            return None
+            if self.dynamic_roi:
+                hint_bounds = self._hint_bounds(absolute_path, screen_img.shape)
+                if (
+                    hint_bounds is not None
+                    and configured_bounds is not None
+                    and not self.roi_fullscreen_fallback
+                ):
+                    hint_bounds = (
+                        max(hint_bounds[0], configured_bounds[0]),
+                        max(hint_bounds[1], configured_bounds[1]),
+                        min(hint_bounds[2], configured_bounds[2]),
+                        min(hint_bounds[3], configured_bounds[3]),
+                    )
+                    if (
+                        hint_bounds[2] - hint_bounds[0] < template_width
+                        or hint_bounds[3] - hint_bounds[1] < template_height
+                    ):
+                        hint_bounds = None
+                if hint_bounds is not None:
+                    match = self._match_region(
+                        screen_img,
+                        template,
+                        method,
+                        threshold,
+                        hint_bounds,
+                        "match.hint",
+                    )
+                    if match is not None:
+                        hint_hit = True
+                    if match is None:
+                        self._discard_location_hint(absolute_path)
 
-            # Stage 2: Full-resolution matching
-            result = cv2.matchTemplate(screen_img, template, method)
-            min_value, max_value, min_location, max_location = cv2.minMaxLoc(
-                result
-            )
-            if method == cv2.TM_SQDIFF_NORMED:
-                confidence = 1.0 - min_value
-                top_left_x, top_left_y = min_location
-            else:
-                confidence = max_value
-                top_left_x, top_left_y = max_location
+            if match is None and configured_bounds is not None:
+                match = self._find_in_region(
+                    screen_img,
+                    template,
+                    method,
+                    threshold,
+                    cache_key,
+                    configured_bounds,
+                    prescaled_screen=_prescaled_screen,
+                    allow_full_fallback=True,
+                )
 
-            if not math.isfinite(confidence) or confidence < threshold:
+            if match is None and (
+                configured_bounds is None
+                or configured_bounds != full_bounds
+                and self.roi_fullscreen_fallback
+                and self._roi_full_scan_due(absolute_path)
+            ):
+                match = self._find_in_region(
+                    screen_img,
+                    template,
+                    method,
+                    threshold,
+                    cache_key,
+                    full_bounds,
+                    prescaled_screen=_prescaled_screen,
+                    allow_full_fallback=True,
+                )
+            if match is None:
                 return None
 
-            height, width = template.shape[:2]
+            top_left_x, top_left_y, confidence = match
+            self._remember_location_hint(
+                absolute_path,
+                screen_img.shape,
+                top_left_x,
+                top_left_y,
+                template_width,
+                template_height,
+                hint_hit,
+            )
+
             target_offsets = (
                 offsets_dict
                 if isinstance(offsets_dict, dict)
@@ -1729,13 +2854,12 @@ class TeraboxClicker:
                     click_x = top_left_x + int(offsets[0])
                     click_y = top_left_y + int(offsets[1])
                 except (TypeError, ValueError):
-                    click_x = top_left_x + width // 2
-                    click_y = top_left_y + height // 2
+                    click_x = top_left_x + template_width // 2
+                    click_y = top_left_y + template_height // 2
             else:
-                click_x = top_left_x + width // 2
-                click_y = top_left_y + height // 2
+                click_x = top_left_x + template_width // 2
+                click_y = top_left_y + template_height // 2
 
-            screen_height, screen_width = screen_img.shape[:2]
             click_x = max(0, min(screen_width - 1, click_x))
             click_y = max(0, min(screen_height - 1, click_y))
             return click_x, click_y, float(confidence)
@@ -1746,11 +2870,15 @@ class TeraboxClicker:
     def click(self, x, y):
         with self._device_lock:
             device = self.device
-        if device is None:
+        if (
+            device is None
+            or self._operation_cancelled()
+        ):
             return False
         try:
             x, y = int(x), int(y)
-            device.shell(f"input tap {x} {y}")
+            device.shell(f"input tap {x} {y}", timeout=ADB_COMMAND_TIMEOUT)
+            self._mark_screen_dirty()
             self.log(f"클릭 수행: ({x}, {y})")
             return True
         except Exception as error:
@@ -1772,10 +2900,14 @@ class TeraboxClicker:
     def go_back(self):
         with self._device_lock:
             device = self.device
-        if device is None:
+        if (
+            device is None
+            or self._operation_cancelled()
+        ):
             return False
         try:
-            device.shell("input keyevent 4")
+            device.shell("input keyevent 4", timeout=ADB_COMMAND_TIMEOUT)
+            self._mark_screen_dirty()
             self.log("뒤로가기(Back 키) 수행")
             return True
         except Exception as error:
@@ -1785,32 +2917,91 @@ class TeraboxClicker:
                     self.device = None
             return False
 
-    def start_loop(self, interval=None):
+    def start_loop(self, interval=None, cancel_event=None):
         """Run until stop_loop is called, recovering from individual scan errors."""
         if interval is not None:
             self.scan_interval = self._safe_number(
                 interval, self.scan_interval, minimum=0.1
             )
 
+        with self._loop_state_lock:
+            if (
+                self._shutdown_event.is_set()
+                or cancel_event is not None and cancel_event.is_set()
+                or self._loop_worker_active
+            ):
+                return
+            self._loop_worker_active = True
+            self._active_loop_cancel_event = cancel_event
+            self.is_running = True
+            self._automatic_loop_active = True
+            self._stop_event.clear()
+            self._loop_wake_event.clear()
+
+        def finish_loop_state():
+            with self._loop_state_lock:
+                self.is_running = False
+                self._automatic_loop_active = False
+                self._loop_worker_active = False
+                if self._active_loop_cancel_event is cancel_event:
+                    self._active_loop_cancel_event = None
+                self._stop_event.set()
+                self._loop_wake_event.set()
+                self._timeout_alert_active = False
+
+        if self._operation_cancelled():
+            finish_loop_state()
+            self.flush_counts()
+            return
+
         if self.device is None and not self.start_adb_server():
             self.log("디바이스 연결 대기 중... 계속 재시도합니다.")
+            self._next_reconnect_at = time.monotonic() + self._reconnect_delay
+            self._reconnect_delay = min(10.0, self._reconnect_delay * 2.0)
 
-        self.is_running = True
-        self._stop_event.clear()
+        if not self.is_running or self._operation_cancelled():
+            finish_loop_state()
+            self.flush_counts()
+            return
+        self._last_scan_had_match = False
+        self._mark_screen_dirty()
+        self._last_full_scan_time = 0.0
         now = time.monotonic()
         self.last_action_time = now
         self.last_match_time = now
         self.last_random_click_time = now
         self._timeout_alert_active = False
-        self.preload_templates([self.template_dir, self.fallback_template_dir])
+        self.preload_templates(
+            [self.template_dir, self.fallback_template_dir],
+            grayscales=(bool(self.match_grayscale),),
+        )
         self.log("자동 클릭커 시작")
 
         try:
-            while self.is_running and not self._stop_event.is_set():
+            while (
+                self.is_running
+                and not self._stop_event.is_set()
+                and not (cancel_event is not None and cancel_event.is_set())
+            ):
+                self._loop_wake_event.clear()
+                if (
+                    not self.is_running
+                    or self._stop_event.is_set()
+                    or cancel_event is not None and cancel_event.is_set()
+                ):
+                    break
+                iteration_started = time.monotonic()
                 try:
                     self.run_once()
                 except Exception as error:
                     self.log(f"⚠️ 스캔 루프 중 예외 발생 (자동 복구): {error}")
+                if (
+                    not self.is_running
+                    or self._stop_event.is_set()
+                    or cancel_event is not None and cancel_event.is_set()
+                ):
+                    break
+
 
                 try:
                     timeout = self._safe_number(
@@ -1820,44 +3011,57 @@ class TeraboxClicker:
                         timeout > 0
                         and time.monotonic() - self.last_action_time >= timeout
                     ):
-                        if not self._timeout_alert_active:
-                            self._timeout_alert_active = True
+                        should_alert = False
+                        timeout_callback = None
+                        with self._loop_state_lock:
+                            if (
+                                not self.is_running
+                                or self._operation_cancelled()
+                            ):
+                                break
+                            if not self._timeout_alert_active:
+                                self._timeout_alert_active = True
+                                should_alert = True
+                                timeout_callback = self.on_timeout_callback
+
+                        if should_alert:
                             self.log(
                                 f"⚠️ 경고: {timeout}초 동안 템플릿 매칭이 "
                                 "발생하지 않았습니다!"
                             )
-                            if self.on_timeout_callback:
+                            if timeout_callback:
                                 try:
-                                    self.on_timeout_callback(timeout)
+                                    timeout_callback(timeout)
                                 except Exception as error:
                                     self.log(f"타임아웃 콜백 오류: {error}")
                 except Exception as error:
                     self.log(f"타임아웃 검사 중 오류: {error}")
 
-                interval_value = self._safe_number(
-                    self.scan_interval,
-                    DEFAULT_SCAN_INTERVAL,
-                    minimum=0.1,
-                )
-                self._stop_event.wait(float(interval_value))
+                elapsed = time.monotonic() - iteration_started
+                wait_time = self._current_wait_interval(elapsed=elapsed)
+                self._wait_for_loop_wake(wait_time, cancel_event)
         except KeyboardInterrupt:
             self.log("사용자에 의해 중단됨")
         except Exception as error:
             self.log(f"치명적 오류 발생 (클릭커 종료): {error}")
         finally:
-            self.is_running = False
-            self._stop_event.set()
-            self._timeout_alert_active = False
+            finish_loop_state()
             self.flush_counts()
             self.log("자동 클릭커 종료")
 
     def stop_loop(self):
-        self.is_running = False
-        self._stop_event.set()
-        self._timeout_alert_active = False
+        with self._loop_state_lock:
+            self.is_running = False
+            self._stop_event.set()
+            self._loop_wake_event.set()
+            self._timeout_alert_active = False
+
+    def request_shutdown(self):
+        self._shutdown_event.set()
+        self.stop_loop()
 
     def shutdown(self):
-        self.stop_loop()
+        self.request_shutdown()
         self.flush_counts()
         with self._device_lock:
             self.device = None
