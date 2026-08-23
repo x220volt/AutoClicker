@@ -104,6 +104,99 @@ class TemplateRowWidgets:
         raise IndexError(f"Index {index} out of range for TemplateRowWidgets")
 
 
+class CTKContextMenu:
+    """A sleek, modern CustomTkinter-native popup context menu that matches the UI design system."""
+    _active_menu = None
+
+    @classmethod
+    def close_active(cls):
+        if cls._active_menu is not None:
+            try:
+                if cls._active_menu.winfo_exists():
+                    cls._active_menu.destroy()
+            except Exception:
+                pass
+            cls._active_menu = None
+
+    def __init__(self, parent):
+        CTKContextMenu.close_active()
+        self.parent = parent
+        toplevel_parent = parent.winfo_toplevel() if hasattr(parent, "winfo_toplevel") else parent
+        self.window = tk.Toplevel(toplevel_parent)
+        self.window.wm_overrideredirect(True)
+        self.window.wm_attributes("-topmost", True)
+        CTKContextMenu._active_menu = self.window
+
+        # Modern Dark Card Frame
+        self.frame = ctk.CTkFrame(
+            self.window,
+            fg_color=COLOR_CARD_BG,
+            border_color="#374151",
+            border_width=1,
+            corner_radius=RADIUS_MD,
+        )
+        self.frame.pack(fill="both", expand=True)
+
+        self._toplevel = toplevel_parent
+        self._bind_id = toplevel_parent.bind("<Button-1>", lambda e: self._check_click_outside(e), add="+")
+        self.window.bind("<FocusOut>", lambda e: CTKContextMenu.close_active())
+
+    def _check_click_outside(self, event):
+        if not self.window.winfo_exists():
+            return
+        x, y = event.x_root, event.y_root
+        wx = self.window.winfo_rootx()
+        wy = self.window.winfo_rooty()
+        ww = self.window.winfo_width()
+        wh = self.window.winfo_height()
+        if not (wx <= x <= wx + ww and wy <= y <= wy + wh):
+            CTKContextMenu.close_active()
+
+    def add_command(self, icon, label, command, is_danger=False):
+        btn = ctk.CTkButton(
+            self.frame,
+            text=f"{icon}  {label}",
+            anchor="w",
+            height=30,
+            width=185,
+            font=ctk.CTkFont(size=12, weight="bold" if is_danger else "normal"),
+            fg_color="transparent",
+            text_color="#EF4444" if is_danger else COLOR_TEXT_PRIMARY,
+            hover_color=COLOR_DANGER_HOVER if is_danger else COLOR_PRIMARY,
+            corner_radius=RADIUS_SM,
+            command=lambda: self._execute(command),
+        )
+        btn.pack(fill="x", padx=4, pady=2)
+
+    def add_separator(self):
+        sep = ctk.CTkFrame(self.frame, height=1, fg_color="#374151")
+        sep.pack(fill="x", padx=6, pady=3)
+
+    def _execute(self, command):
+        CTKContextMenu.close_active()
+        if command:
+            command()
+
+    def show(self, x, y):
+        self.window.update_idletasks()
+        w = self.window.winfo_reqwidth()
+        h = self.window.winfo_reqheight()
+        screen_w = self.window.winfo_screenwidth()
+        screen_h = self.window.winfo_screenheight()
+
+        if x + w > screen_w - 10:
+            x = x - w
+        if y + h > screen_h - 40:
+            y = y - h
+        if x < 10:
+            x = 10
+        if y < 10:
+            y = 10
+
+        self.window.geometry(f"+{x}+{y}")
+        self.window.focus_set()
+
+
 class TemplatePreviewTooltip:
     """Hover preview popup showing template image thumbnail, dimensions, and offset."""
     _instance = None
@@ -2095,41 +2188,28 @@ class InstanceTabFrame(ctk.CTkFrame):
         # Right-click Context Menu (우클릭 컨텍스트 메뉴)
         def show_context_menu(event):
             TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
-            menu = tk.Menu(
-                self,
-                tearoff=0,
-                bg="#1E222B",
-                fg="#F1F5F9",
-                activebackground=COLOR_PRIMARY,
-                activeforeground="#FFFFFF",
-                activeborderwidth=0,
-                bd=1,
-                relief="solid",
-                font=("Segoe UI", 10),
+            menu = CTKContextMenu(self)
+            menu.add_command(
+                "✏️", "이름 변경 (Rename)",
+                lambda f=filename, fb=is_fallback: RenameTemplateWindow(self, f, fb),
             )
             menu.add_command(
-                label="✏️   이름 변경 (Rename)",
-                command=lambda f=filename, fb=is_fallback: RenameTemplateWindow(self, f, fb),
+                "🎯", "즉시 실행 (Run Now)",
+                lambda f=filename, fb=is_fallback: self.on_template_double_click(f, fb),
             )
             menu.add_command(
-                label="🎯   즉시 실행 (Run Now)",
-                command=lambda f=filename, fb=is_fallback: self.on_template_double_click(f, fb),
+                "⏱️", "지연 시간 설정 (Set Delay)",
+                lambda f=filename, fb=is_fallback: (self.set_fallback_template_delay_event(f) if fb else self.set_template_delay_event(f)),
             )
+            menu.add_separator()
             menu.add_command(
-                label="⏱️   지연 시간 설정 (Set Delay)",
-                command=lambda f=filename, fb=is_fallback: (self.set_fallback_template_delay_event(f) if fb else self.set_template_delay_event(f)),
+                "🗑️", "템플릿 삭제 (Delete)",
+                lambda f=filename, fb=is_fallback: (self.delete_fallback_template_event(f) if fb else self.delete_template_event(f)),
+                is_danger=True,
             )
-            menu.add_separator(background="#2E3545")
-            menu.add_command(
-                label="🗑️   템플릿 삭제 (Delete)",
-                command=lambda f=filename, fb=is_fallback: (self.delete_fallback_template_event(f) if fb else self.delete_template_event(f)),
-            )
-            try:
-                pop_x = event.x_root if hasattr(event, "x_root") and event.x_root > 0 else self.winfo_pointerx()
-                pop_y = event.y_root if hasattr(event, "y_root") and event.y_root > 0 else self.winfo_pointery()
-                menu.tk_popup(pop_x, pop_y)
-            finally:
-                menu.grab_release()
+            pop_x = event.x_root if hasattr(event, "x_root") and event.x_root > 0 else self.winfo_pointerx()
+            pop_y = event.y_root if hasattr(event, "y_root") and event.y_root > 0 else self.winfo_pointery()
+            menu.show(pop_x, pop_y)
 
         for target in (row_frame, label, priority_label, drag_handle):
             target.bind("<Button-3>", show_context_menu)
