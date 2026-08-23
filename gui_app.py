@@ -58,33 +58,33 @@ RADIUS_MD = 6
 RADIUS_LG = 8
 
 NO_MATCH_ACTION_MAP = {
-    "fallback_list": "📋 미매칭 복구 템플릿 목록 매칭 (Fallback List)",
+    "fallback_list": "미매칭 복구 템플릿 목록 매칭",
     "none": "사용 안 함 (Disabled)",
-    "random_click": "🎲 화면 랜덤 클릭 (Random Click)",
-    "custom_click": "👆 특정 좌표 클릭 (Custom Click)",
-    "custom_double_click": "✌️ 특정 좌표 더블클릭 (Double Click)",
-    "back": "↩️ 뒤로가기 (Back Key)"
+    "random_click": "화면 랜덤 클릭 (Random Click)",
+    "custom_click": "특정 좌표 클릭 (Custom Click)",
+    "custom_double_click": "특정 좌표 더블클릭 (Double Click)",
+    "back": "뒤로가기 (Back Key)"
 }
 REVERSE_NO_MATCH_ACTION_MAP = {v: k for k, v in NO_MATCH_ACTION_MAP.items()}
 
 
 def get_action_button_style(action):
     if action == "back":
-        return "↩️ Back (뒤로)", COLOR_WARNING, COLOR_WARNING_HOVER
+        return "뒤로 (Back)", COLOR_WARNING, COLOR_WARNING_HOVER
     elif action in ("double_click", "click_click", "double"):
-        return "✌️ Double (더블)", COLOR_PRIMARY, COLOR_PRIMARY_HOVER
+        return "더블 (Double)", COLOR_PRIMARY, COLOR_PRIMARY_HOVER
     else:
-        return "👆 Click (클릭)", COLOR_SUCCESS, COLOR_SUCCESS_HOVER
+        return "클릭 (Click)", COLOR_SUCCESS, COLOR_SUCCESS_HOVER
 
 
 def get_delay_button_style(delay, delay_type="pre"):
     if delay > 0:
         if delay_type == "post":
-            return f"⏱️후 {delay:g}s", COLOR_INFO, COLOR_INFO_HOVER
+            return f"동작후 {delay:g}s", COLOR_INFO, COLOR_INFO_HOVER
         else:
-            return f"⏱️전 {delay:g}s", COLOR_WARNING, COLOR_WARNING_HOVER
+            return f"동작전 {delay:g}s", COLOR_WARNING, COLOR_WARNING_HOVER
     else:
-        return "⏱️ 0s", COLOR_NEUTRAL, COLOR_NEUTRAL_HOVER
+        return "딜레이 0s", COLOR_NEUTRAL, COLOR_NEUTRAL_HOVER
 
 
 class TemplateRowWidgets:
@@ -1320,7 +1320,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         # Device Address Selector
         self.device_addr_label = ctk.CTkLabel(
             self.header_frame,
-            text="📱 디바이스:",
+            text="디바이스:",
             font=ctk.CTkFont(size=12, weight="bold")
         )
         self.device_addr_label.pack(side="left", padx=(12, 6), pady=8)
@@ -1342,7 +1342,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         # Connect / Disconnect Button
         self.connect_button = ctk.CTkButton(
             self.header_frame,
-            text="🔗 연결 (Connect)",
+            text="디바이스 연결",
             width=120,
             height=32,
             fg_color=COLOR_PRIMARY,
@@ -1355,7 +1355,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         # Start / Stop Clicker Button
         self.start_button = ctk.CTkButton(
             self.header_frame,
-            text="▶ 시작 (Start)",
+            text="클리커 시작",
             width=120,
             height=32,
             state="disabled",
@@ -1378,8 +1378,8 @@ class InstanceTabFrame(ctk.CTkFrame):
         # Right side buttons in tab header: Settings & Delete Tab
         self.delete_tab_btn = ctk.CTkButton(
             self.header_frame,
-            text="🗑️ 탭 닫기",
-            width=90,
+            text="탭 닫기",
+            width=85,
             height=32,
             fg_color=COLOR_DANGER,
             hover_color=COLOR_DANGER_HOVER,
@@ -1390,8 +1390,8 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         self.settings_button = ctk.CTkButton(
             self.header_frame,
-            text="⚙️ 설정",
-            width=85,
+            text="설정",
+            width=80,
             height=32,
             fg_color=COLOR_NEUTRAL,
             hover_color=COLOR_NEUTRAL_HOVER,
@@ -2037,7 +2037,7 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         self._connection_generation += 1
         generation = self._connection_generation
-        self.connect_button.configure(state="disabled", text="Connecting...")
+        self.connect_button.configure(state="disabled", text="연결 중...")
 
         def connect_task():
             success = self.clicker.start_adb_server()
@@ -2049,19 +2049,26 @@ class InstanceTabFrame(ctk.CTkFrame):
                     return
                 if success:
                     self.status_label.configure(
-                        text=f"Status: Connected to {self.clicker.device_address}",
-                        text_color="green",
+                        text=f"상태: 연결 완료 ({self.clicker.device_address})",
+                        text_color=COLOR_SUCCESS,
                     )
-                    self.start_button.configure(state="normal")
+                    self.start_button.configure(
+                        state="normal", text="클리커 시작",
+                        fg_color=COLOR_SUCCESS, hover_color=COLOR_SUCCESS_HOVER
+                    )
                     self.crop_button.configure(state="normal")
                     self.crop_fb_button.configure(state="normal")
-                    self.connect_button.configure(state="normal", text="Disconnect")
+                    self.connect_button.configure(
+                        state="normal", text="연결 해제",
+                        fg_color=COLOR_DANGER, hover_color=COLOR_DANGER_HOVER
+                    )
                 else:
                     self.status_label.configure(
-                        text="Status: Connection Failed", text_color="red"
+                        text="상태: 연결 실패", text_color=COLOR_DANGER
                     )
                     self.connect_button.configure(
-                        state="normal", text="Connect Device"
+                        state="normal", text="디바이스 연결",
+                        fg_color=COLOR_PRIMARY, hover_color=COLOR_PRIMARY_HOVER
                     )
 
             self.app_owner.post_to_ui(apply_result)
@@ -2089,11 +2096,11 @@ class InstanceTabFrame(ctk.CTkFrame):
         self._loop_cancel_event = cancel_event
         self._alert_shown_for_current_timeout = False
         self.start_button.configure(
-            text="Stop Clicker", fg_color="red", hover_color="#8B0000"
+            text="클리커 중지", fg_color=COLOR_DANGER, hover_color=COLOR_DANGER_HOVER
         )
         self.status_label.configure(
-            text=f"Status: Running ({self.clicker.device_address})",
-            text_color="green",
+            text=f"상태: 실행 중 ({self.clicker.device_address})",
+            text_color=COLOR_SUCCESS,
         )
 
         def run_loop():
@@ -2110,17 +2117,17 @@ class InstanceTabFrame(ctk.CTkFrame):
                     if self._destroyed or not self.winfo_exists():
                         return
                     self.start_button.configure(
-                        text="Start Clicker",
-                        fg_color="green",
-                        hover_color="#006400",
+                        text="클리커 시작",
+                        fg_color=COLOR_SUCCESS,
+                        hover_color=COLOR_SUCCESS_HOVER,
                     )
                     self.status_label.configure(
                         text=(
-                            f"Status: Connected to {self.clicker.device_address}"
+                            f"상태: 연결 완료 ({self.clicker.device_address})"
                             if self.clicker.device
-                            else "Status: Disconnected"
+                            else "상태: 연결 안 됨"
                         ),
-                        text_color="green" if self.clicker.device else "gray",
+                        text_color=COLOR_SUCCESS if self.clicker.device else COLOR_TEXT_MUTED,
                     )
 
                 self.app_owner.post_to_ui(finish_loop)
@@ -2993,9 +3000,9 @@ class App(ctk.CTk):
 
         self.connect_all_btn = ctk.CTkButton(
             self.top_bar,
-            text="🔗  전체 연결",
+            text="전체 연결",
             font=btn_font,
-            width=110,
+            width=105,
             height=34,
             fg_color=COLOR_PRIMARY,
             hover_color=COLOR_PRIMARY_HOVER,
@@ -3006,9 +3013,9 @@ class App(ctk.CTk):
 
         self.start_all_btn = ctk.CTkButton(
             self.top_bar,
-            text="▶  전체 시작",
+            text="전체 시작",
             font=btn_font,
-            width=110,
+            width=105,
             height=34,
             fg_color=COLOR_SUCCESS,
             hover_color=COLOR_SUCCESS_HOVER,
@@ -3019,9 +3026,9 @@ class App(ctk.CTk):
 
         self.stop_all_btn = ctk.CTkButton(
             self.top_bar,
-            text="⏹  전체 중지",
+            text="전체 중지",
             font=btn_font,
-            width=110,
+            width=105,
             height=34,
             fg_color=COLOR_DANGER,
             hover_color=COLOR_DANGER_HOVER,
@@ -3032,9 +3039,9 @@ class App(ctk.CTk):
 
         self.add_tab_btn = ctk.CTkButton(
             self.top_bar,
-            text="➕  인스턴스 추가",
+            text="인스턴스 추가",
             font=btn_font,
-            width=130,
+            width=120,
             height=34,
             fg_color=COLOR_NEUTRAL,
             hover_color=COLOR_NEUTRAL_HOVER,
