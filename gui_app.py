@@ -22,24 +22,29 @@ VERSION = "v0.3.7"
 # 앱 전역 테마를 Dark 모드로 고정
 ctk.set_appearance_mode("Dark")
 
-# --- Unified Modern Design System Color & Style Tokens ---
-COLOR_PRIMARY = "#2563EB"         # Blue - Primary Actions / Focus / Connect
-COLOR_PRIMARY_HOVER = "#1D4ED8"
+# --- Unified Modern Dark Design System Color & Style Tokens ---
+# Eye-friendly, soft muted tones designed for long-session dark mode
 
-COLOR_SUCCESS = "#16A34A"         # Green - Start / Active / Single Click
-COLOR_SUCCESS_HOVER = "#15803D"
+COLOR_PRIMARY = "#2D5F9E"          # Soft Royal Blue - Primary Actions / Focus / Connect
+COLOR_PRIMARY_HOVER = "#3B73BD"
 
-COLOR_DANGER = "#DC2626"          # Red - Stop / Disconnect / Delete / Reset
-COLOR_DANGER_HOVER = "#B91C1C"
+COLOR_SUCCESS = "#257A4E"          # Deep Emerald Green - Start / Active / Single Click
+COLOR_SUCCESS_HOVER = "#2FA066"
 
-COLOR_WARNING = "#D97706"         # Amber - Back Action / Pre-Delay / Warnings
-COLOR_WARNING_HOVER = "#B45309"
+COLOR_DANGER = "#8A2E3B"           # Soft Crimson Wine - Stop / Disconnect / Delete (Not glaring/neon)
+COLOR_DANGER_HOVER = "#A43949"
 
-COLOR_INFO = "#4F46E5"            # Indigo - Post-Delay / Special Actions
-COLOR_INFO_HOVER = "#4338CA"
+COLOR_DANGER_MUTED = "#48262D"     # Subdued Dark Wine - Secondary actions like Reset Counts
+COLOR_DANGER_MUTED_HOVER = "#5C3039"
 
-COLOR_NEUTRAL = "#374151"         # Slate - Settings / Neutral / Utility
-COLOR_NEUTRAL_HOVER = "#4B5563"
+COLOR_WARNING = "#915C16"          # Warm Ochre Amber - Back Action / Pre-Delay / Warnings
+COLOR_WARNING_HOVER = "#AB6D1B"
+
+COLOR_INFO = "#49528F"             # Slate Indigo - Post-Delay / Special Actions
+COLOR_INFO_HOVER = "#5864AD"
+
+COLOR_NEUTRAL = "#2D3442"          # Dark Slate - Settings / Neutral / Utility
+COLOR_NEUTRAL_HOVER = "#3C4557"
 
 COLOR_CARD_BG = ("#2B2F3A", "#181B22")
 COLOR_CARD_INNER = ("#333945", "#212631")
@@ -1505,8 +1510,8 @@ class InstanceTabFrame(ctk.CTkFrame):
             text="🔄 카운트 초기화",
             width=120,
             height=30,
-            fg_color=COLOR_DANGER,
-            hover_color=COLOR_DANGER_HOVER,
+            fg_color=COLOR_DANGER_MUTED,
+            hover_color=COLOR_DANGER_MUTED_HOVER,
             corner_radius=RADIUS_MD,
             command=self.reset_counts_event
         )
@@ -1552,8 +1557,8 @@ class InstanceTabFrame(ctk.CTkFrame):
             text="🔄 카운트 초기화",
             width=120,
             height=30,
-            fg_color=COLOR_DANGER,
-            hover_color=COLOR_DANGER_HOVER,
+            fg_color=COLOR_DANGER_MUTED,
+            hover_color=COLOR_DANGER_MUTED_HOVER,
             corner_radius=RADIUS_MD,
             command=self.reset_fallback_counts_event
         )
