@@ -17,7 +17,7 @@ except Exception:
 
 from main import TeraboxClicker, CONFIG_PATH, ADB_COMMAND_TIMEOUT
 
-VERSION = "v0.3.9"
+VERSION = "v0.3.10"
 
 # 앱 전역 테마를 Dark 모드로 고정
 ctk.set_appearance_mode("Dark")

@@ -40,6 +40,7 @@ CONFIG_FILENAME = "config.json"
 TEMPLATE_DIR_NAME = "templates"
 FALLBACK_TEMPLATE_DIR_NAME = "fallback_templates"
 COUNT_FLUSH_INTERVAL = 5.0
+TEMPLATE_MANIFEST_REFRESH_INTERVAL = 1.0
 ADB_COMMAND_TIMEOUT = 10.0
 PRESCALE_FACTOR = 0.5
 PRESCALE_MIN_TEMPLATE_DIM = 20
@@ -48,6 +49,8 @@ LOCAL_VERIFY_TOP_K = 3
 HINT_FULL_SCAN_INTERVAL = 10
 PERFORMANCE_SAMPLE_LIMIT = 240
 DEFAULT_FORCE_SCAN_INTERVAL = 5.0
+DEFAULT_ROI_FULL_SCAN_BUDGET = 2
+ROI_PRIORITY_TEMPLATE_COUNT = 3
 DEFAULT_MAX_IDLE_INTERVAL = 5.0
 DEFAULT_CAPTURE_BACKEND = "auto"
 VALID_CAPTURE_BACKENDS = {"auto", "png", "raw"}
@@ -96,9 +99,14 @@ class TeraboxClicker:
 
     _config_lock = threading.RLock()
     _template_cache_lock = threading.RLock()
+    _template_manifest_lock = threading.RLock()
     _preload_lock = threading.Lock()
     _template_cache = {}
     _scaled_template_cache = {}
+    _template_directory_manifests = {}
+    _template_directory_last_scan = {}
+    _template_directory_generations = defaultdict(int)
+    _template_file_generations = defaultdict(int)
     _pending_count_deltas = defaultdict(
         lambda: {
             "template_counts": defaultdict(int),
@@ -198,6 +206,7 @@ class TeraboxClicker:
         self.local_verify_top_k = LOCAL_VERIFY_TOP_K
         self.dynamic_roi = True
         self.roi_fullscreen_fallback = True
+        self.roi_full_scan_budget = DEFAULT_ROI_FULL_SCAN_BUDGET
         self.frame_change_detection = (
             True if frame_change_detection is None else bool(frame_change_detection)
         )
@@ -264,6 +273,12 @@ class TeraboxClicker:
         self._hint_lock = threading.RLock()
         self._template_hint_hits = defaultdict(int)
         self._roi_full_scan_times = {}
+        self._roi_full_scan_reservation_times = {}
+        self._roi_full_scan_round_robin = {}
+        self._roi_full_scan_allowed = set()
+        self._roi_full_scan_budget_remaining = 0
+        self._roi_full_scan_frame_active = False
+        self._roi_screen_shape = None
         self._transition_counts = defaultdict(Counter)
         self._adaptive_order_cycle = 0
         self._perf_lock = threading.Lock()
@@ -286,6 +301,7 @@ class TeraboxClicker:
         self._loop_worker_active = False
         self._device_lock = threading.RLock()
         self._loop_state_lock = threading.RLock()
+        self._seen_template_directory_generations = {}
 
         self.template_dir = os.path.join(self.base_dir, TEMPLATE_DIR_NAME)
         self.fallback_template_dir = os.path.join(
@@ -514,9 +530,6 @@ class TeraboxClicker:
         self._force_full_scan = False
         if not unchanged:
             self._unchanged_frame_streak = 0
-            if hasattr(self, "_hint_lock"):
-                with self._hint_lock:
-                    self._roi_full_scan_times.clear()
         return True
 
     def _mark_screen_dirty(self):
@@ -524,9 +537,6 @@ class TeraboxClicker:
         self._last_frame_signature = None
         self._unchanged_frame_streak = 0
 
-        if hasattr(self, "_hint_lock"):
-            with self._hint_lock:
-                self._roi_full_scan_times.clear()
     def _current_loop_interval(self):
         base = float(self._safe_number(
             self.scan_interval, DEFAULT_SCAN_INTERVAL, minimum=0.1
@@ -875,6 +885,11 @@ class TeraboxClicker:
         self.roi_fullscreen_fallback = self._safe_bool(
             source.get("roi_fullscreen_fallback"), True
         )
+        self.roi_full_scan_budget = self._safe_int(
+            source.get("roi_full_scan_budget", DEFAULT_ROI_FULL_SCAN_BUDGET),
+            DEFAULT_ROI_FULL_SCAN_BUDGET,
+            minimum=1,
+        )
         self.frame_change_detection = self._safe_bool(
             source.get("frame_change_detection"),
             defaults["frame_change_detection"],
@@ -965,19 +980,158 @@ class TeraboxClicker:
         result.extend(filename for filename in current_files if filename not in seen)
         return result
 
-    @staticmethod
-    def _list_template_files(directory):
-        try:
-            entries = os.scandir(directory)
-        except OSError:
-            return []
-        with entries:
-            return sorted(
-                entry.name
-                for entry in entries
-                if entry.is_file()
-                and entry.name.lower().endswith(IMAGE_EXTENSIONS)
+    @classmethod
+    def _drop_template_cache_entries_unlocked(cls, absolute_path):
+        for cache_key in tuple(cls._template_cache):
+            cached_path = (
+                cache_key[0] if isinstance(cache_key, tuple) else cache_key
             )
+            if cached_path == absolute_path:
+                cls._template_cache.pop(cache_key, None)
+                cls._scaled_template_cache.pop(cache_key, None)
+
+    @classmethod
+    def _refresh_template_directory(cls, directory, force=False):
+        """Refresh one shared directory manifest at most once per interval."""
+        absolute_dir = os.path.abspath(directory)
+        now = time.perf_counter()
+        manifest = cls._template_directory_manifests.get(absolute_dir)
+        last_scan = cls._template_directory_last_scan.get(absolute_dir, 0.0)
+        if (
+            not force
+            and manifest is not None
+            and now - last_scan < TEMPLATE_MANIFEST_REFRESH_INTERVAL
+        ):
+            return manifest
+
+        with cls._template_manifest_lock:
+            now = time.perf_counter()
+            manifest = cls._template_directory_manifests.get(absolute_dir)
+            last_scan = cls._template_directory_last_scan.get(
+                absolute_dir, 0.0
+            )
+            if (
+                not force
+                and manifest is not None
+                and now - last_scan < TEMPLATE_MANIFEST_REFRESH_INTERVAL
+            ):
+                return manifest
+
+            current = {}
+            try:
+                entries = os.scandir(absolute_dir)
+            except OSError:
+                entries = None
+            if entries is not None:
+                with entries:
+                    for entry in entries:
+                        if not entry.name.lower().endswith(IMAGE_EXTENSIONS):
+                            continue
+                        try:
+                            if not entry.is_file():
+                                continue
+                            stat_result = entry.stat()
+                        except OSError:
+                            continue
+                        absolute_path = os.path.abspath(entry.path)
+                        current[absolute_path] = (
+                            stat_result.st_mtime_ns,
+                            stat_result.st_size,
+                        )
+
+            previous = manifest or {}
+            changed_paths = {
+                path
+                for path in set(previous).union(current)
+                if previous.get(path) != current.get(path)
+            }
+            if changed_paths:
+                cls._template_directory_generations[absolute_dir] += 1
+                with cls._template_cache_lock:
+                    for absolute_path in changed_paths:
+                        cls._template_file_generations[absolute_path] += 1
+                        cls._drop_template_cache_entries_unlocked(absolute_path)
+            cls._template_directory_manifests[absolute_dir] = current
+            cls._template_directory_last_scan[absolute_dir] = now
+            return current
+
+    @classmethod
+    def _template_is_registered(cls, template_path):
+        absolute_path = os.path.abspath(template_path)
+        manifest = cls._refresh_template_directory(
+            os.path.dirname(absolute_path)
+        )
+        return absolute_path in manifest
+
+    @classmethod
+    def _list_template_files(cls, directory):
+        manifest = cls._refresh_template_directory(directory)
+        return sorted(os.path.basename(path) for path in manifest)
+
+    def _remember_template_directory_generations(self):
+        for directory in (self.template_dir, self.fallback_template_dir):
+            absolute_dir = os.path.abspath(directory)
+            self._seen_template_directory_generations[absolute_dir] = (
+                self._template_directory_generations.get(absolute_dir, 0)
+            )
+
+    @staticmethod
+    def _prune_template_collection(manifest, order, mappings):
+        available = {os.path.basename(path) for path in manifest}
+        missing = {filename for filename in order if filename not in available}
+        if not missing:
+            return False
+        order[:] = [filename for filename in order if filename not in missing]
+        for mapping in mappings:
+            for filename in missing:
+                mapping.pop(filename, None)
+        return True
+
+    def _refresh_template_manifests(self):
+        changed = False
+        collections = (
+            (
+                self.template_dir,
+                self.template_order,
+                (
+                    self.template_counts,
+                    self.template_actions,
+                    self.template_offsets,
+                    self.template_delays,
+                    self.template_delay_types,
+                    self.template_rois,
+                ),
+            ),
+            (
+                self.fallback_template_dir,
+                self.fallback_template_order,
+                (
+                    self.fallback_template_counts,
+                    self.fallback_template_actions,
+                    self.fallback_template_offsets,
+                    self.fallback_template_delays,
+                    self.fallback_template_delay_types,
+                    self.fallback_template_rois,
+                ),
+            ),
+        )
+        for directory, order, mappings in collections:
+            absolute_dir = os.path.abspath(directory)
+            manifest = self._refresh_template_directory(absolute_dir)
+            generation = self._template_directory_generations.get(
+                absolute_dir, 0
+            )
+            previous = self._seen_template_directory_generations.get(
+                absolute_dir
+            )
+            self._seen_template_directory_generations[absolute_dir] = generation
+            if previous is not None and previous != generation:
+                changed = True
+            if self._prune_template_collection(manifest, order, mappings):
+                changed = True
+        if changed:
+            self._force_full_scan = True
+        return changed
 
     def _sync_template_collection(
         self,
@@ -1109,8 +1263,15 @@ class TeraboxClicker:
             self._template_location_hints.clear()
             self._template_hint_hits.clear()
             self._roi_full_scan_times.clear()
+            self._roi_full_scan_reservation_times.clear()
+            self._roi_full_scan_round_robin.clear()
+            self._roi_full_scan_allowed.clear()
+            self._roi_full_scan_budget_remaining = 0
+            self._roi_full_scan_frame_active = False
+            self._roi_screen_shape = None
 
         self.adb_path = get_default_adb_path(self.base_dir)
+        self._remember_template_directory_generations()
         return True
 
     def _settings_dict(self):
@@ -1131,6 +1292,7 @@ class TeraboxClicker:
             "local_verify_top_k": self.local_verify_top_k,
             "dynamic_roi": self.dynamic_roi,
             "roi_fullscreen_fallback": self.roi_fullscreen_fallback,
+            "roi_full_scan_budget": self.roi_full_scan_budget,
             "frame_change_detection": self.frame_change_detection,
             "force_scan_interval": self.force_scan_interval,
             "adaptive_scan_interval": self.adaptive_scan_interval,
@@ -1292,58 +1454,53 @@ class TeraboxClicker:
             valid_dirs = []
             for directory in directories:
                 absolute_dir = os.path.abspath(directory)
-                if os.path.isdir(absolute_dir) and absolute_dir not in valid_dirs:
+                if absolute_dir not in valid_dirs:
                     valid_dirs.append(absolute_dir)
 
             modes = tuple(dict.fromkeys(bool(gray) for gray in grayscales))
             loaded_count = 0
             for directory in valid_dirs:
-                try:
-                    entries = os.scandir(directory)
-                except OSError:
-                    continue
-                with entries:
-                    for entry in entries:
-                        if not entry.is_file() or not entry.name.lower().endswith(
-                            (".png", ".jpg", ".jpeg", ".bmp", ".webp")
-                        ):
+                manifest = cls._refresh_template_directory(directory)
+                for absolute_path in sorted(manifest):
+                    for grayscale in modes:
+                        cache_key = (absolute_path, grayscale)
+                        template, _ = cls._load_template_direct(
+                            absolute_path, grayscale=grayscale
+                        )
+                        if template is None:
                             continue
-                        absolute_path = os.path.abspath(entry.path)
-                        for grayscale in modes:
-                            cache_key = (absolute_path, grayscale)
-                            template, _ = cls._load_template_direct(
-                                absolute_path, grayscale=grayscale
+                        with cls._template_cache_lock:
+                            cached_scaled = cls._scaled_template_cache.get(
+                                cache_key
                             )
-                            if template is None:
+                            if (
+                                cached_scaled is not None
+                                and cached_scaled[0] is template
+                            ):
                                 continue
-                            with cls._template_cache_lock:
-                                cached_scaled = cls._scaled_template_cache.get(
-                                    cache_key
-                                )
-                                if (
-                                    cached_scaled is not None
-                                    and cached_scaled[0] is template
-                                ):
-                                    continue
-                            cls._get_scaled_template(cache_key, template)
-                            loaded_count += 1
+                        cls._get_scaled_template(cache_key, template)
+                        loaded_count += 1
             return loaded_count
 
     @classmethod
     def _load_template_direct(cls, absolute_path, grayscale=False):
-        """Decode template image from disk and store in global memory cache."""
-        try:
-            stat = os.stat(absolute_path)
-            signature = (stat.st_mtime_ns, stat.st_size)
-        except OSError:
-            cls.invalidate_template_cache(absolute_path)
+        """Decode one manifest-registered template and cache it by generation."""
+        absolute_path = os.path.abspath(absolute_path)
+        manifest = cls._refresh_template_directory(
+            os.path.dirname(absolute_path)
+        )
+        if absolute_path not in manifest:
+            return None, None
+
+        generation = cls._template_file_generations.get(absolute_path)
+        if generation is None:
             return None, None
 
         use_grayscale = bool(grayscale)
         cache_key = (absolute_path, use_grayscale)
         with cls._template_cache_lock:
             cached = cls._template_cache.get(cache_key)
-            if cached is not None and cached[0] == signature:
+            if cached is not None and cached[0] == generation:
                 return cached[1], cached[2]
             if cached is not None:
                 cls._scaled_template_cache.pop(cache_key, None)
@@ -1371,15 +1528,26 @@ class TeraboxClicker:
             )
 
             with cls._template_cache_lock:
+                current_generation = cls._template_file_generations.get(
+                    absolute_path
+                )
+                if current_generation != generation:
+                    current = cls._template_cache.get(cache_key)
+                    if (
+                        current is not None
+                        and current[0] == current_generation
+                    ):
+                        return current[1], current[2]
+                    return None, None
                 cls._scaled_template_cache.pop((absolute_path, False), None)
                 cls._scaled_template_cache.pop((absolute_path, True), None)
                 cls._template_cache[(absolute_path, False)] = (
-                    signature,
+                    generation,
                     template_color,
                     method_color,
                 )
                 cls._template_cache[(absolute_path, True)] = (
-                    signature,
+                    generation,
                     template_gray,
                     method_gray,
                 )
@@ -1388,29 +1556,52 @@ class TeraboxClicker:
         except Exception:
             template, method = None, None
             with cls._template_cache_lock:
-                cls._scaled_template_cache.pop(cache_key, None)
-                cls._template_cache[cache_key] = (
-                    signature,
-                    None,
-                    None,
-                )
+                if (
+                    cls._template_file_generations.get(absolute_path)
+                    == generation
+                ):
+                    cls._scaled_template_cache.pop(cache_key, None)
+                    cls._template_cache[cache_key] = (
+                        generation,
+                        None,
+                        None,
+                    )
         return template, method
 
     @classmethod
     def invalidate_template_cache(cls, template_path=None):
-        with cls._template_cache_lock:
-            if template_path is None:
-                cls._template_cache.clear()
-                cls._scaled_template_cache.clear()
+        if template_path is None:
+            with cls._template_manifest_lock:
+                cls._template_directory_manifests.clear()
+                cls._template_directory_last_scan.clear()
+                cls._template_directory_generations.clear()
+                cls._template_file_generations.clear()
+                with cls._template_cache_lock:
+                    cls._template_cache.clear()
+                    cls._scaled_template_cache.clear()
+            return
+
+        absolute_path = os.path.abspath(template_path)
+        absolute_dir = os.path.dirname(absolute_path)
+        try:
+            stat_result = os.stat(absolute_path)
+            signature = (stat_result.st_mtime_ns, stat_result.st_size)
+        except OSError:
+            signature = None
+
+        with cls._template_manifest_lock:
+            manifest = dict(
+                cls._template_directory_manifests.get(absolute_dir, {})
+            )
+            if signature is None:
+                manifest.pop(absolute_path, None)
             else:
-                absolute_path = os.path.abspath(template_path)
-                for cache_key in tuple(cls._template_cache):
-                    cached_path = (
-                        cache_key[0] if isinstance(cache_key, tuple) else cache_key
-                    )
-                    if cached_path == absolute_path:
-                        cls._template_cache.pop(cache_key, None)
-                        cls._scaled_template_cache.pop(cache_key, None)
+                manifest[absolute_path] = signature
+            cls._template_directory_generations[absolute_dir] += 1
+            cls._template_file_generations[absolute_path] += 1
+            with cls._template_cache_lock:
+                cls._drop_template_cache_entries_unlocked(absolute_path)
+            cls._template_directory_manifests[absolute_dir] = manifest
 
     def _remove_count_state(self, filename, counts_key):
         path_key = os.path.abspath(self.config_path)
@@ -1448,7 +1639,7 @@ class TeraboxClicker:
             delays.pop(filename, None)
             delay_types.pop(filename, None)
             rois.pop(filename, None)
-            self._discard_location_hint(file_path)
+            self._discard_location_hint(file_path, clear_full_scan_state=True)
             self._remove_count_state(filename, counts_key)
             self.invalidate_template_cache(file_path)
             return self.save_config(include_templates=True)
@@ -1552,8 +1743,8 @@ class TeraboxClicker:
             if old_filename in rois:
                 rois[new_filename] = rois.pop(old_filename)
 
-            self._discard_location_hint(old_path)
-            self._discard_location_hint(new_path)
+            self._discard_location_hint(old_path, clear_full_scan_state=True)
+            self._discard_location_hint(new_path, clear_full_scan_state=True)
             self._remove_count_state(old_filename, counts_key)
             self.invalidate_template_cache(old_path)
             self.invalidate_template_cache(new_path)
@@ -1804,22 +1995,22 @@ class TeraboxClicker:
                 return False
 
     def _try_fallback_templates(self, screen, now, _prescaled_screen=None):
-        for filename in tuple(self._get_template_scan_order(
+        self._refresh_template_manifests()
+        if not self._roi_full_scan_frame_active:
+            self._begin_roi_full_scan_frame(screen.shape)
+        scan_order = tuple(self._get_template_scan_order(
             self.fallback_template_order, is_fallback=True
-        )):
+        ))
+        self._schedule_roi_full_scan_candidates(
+            self.fallback_template_dir,
+            scan_order,
+            self.fallback_template_rois,
+            now=now,
+        )
+        for filename in scan_order:
             if self._automatic_loop_active and self._stop_event.is_set():
                 return False
             template_path = os.path.join(self.fallback_template_dir, filename)
-            if not os.path.exists(template_path):
-                if filename in self.fallback_template_order:
-                    self.fallback_template_order.remove(filename)
-                self.fallback_template_counts.pop(filename, None)
-                self.fallback_template_actions.pop(filename, None)
-                self.fallback_template_offsets.pop(filename, None)
-                self.fallback_template_delays.pop(filename, None)
-                self.fallback_template_delay_types.pop(filename, None)
-                self.fallback_template_rois.pop(filename, None)
-                continue
 
             match = self.find_template(
                 screen,
@@ -2019,7 +2210,9 @@ class TeraboxClicker:
 
     def run_once(self):
         """Capture once, scan templates, and perform at most one action."""
+        self._reset_roi_full_scan_frame()
         cycle_started = time.perf_counter()
+        self._refresh_template_manifests()
         screen = self.capture_screen()
         if self._automatic_loop_active and self._stop_event.is_set():
             return False
@@ -2041,6 +2234,7 @@ class TeraboxClicker:
             self._record_performance("scan.skipped", cycle_started)
             return False
 
+        self._begin_roi_full_scan_frame(screen.shape)
         prescaled_cache = [None]
         self._record_performance("preprocess", preprocess_started)
 
@@ -2062,20 +2256,16 @@ class TeraboxClicker:
         scan_order = tuple(self._get_template_scan_order(
             self.template_order, is_fallback=False
         ))
+        self._schedule_roi_full_scan_candidates(
+            self.template_dir,
+            scan_order,
+            self.template_rois,
+            now=now,
+        )
         for filename in scan_order:
             if self._automatic_loop_active and self._stop_event.is_set():
                 return False
             template_path = os.path.join(self.template_dir, filename)
-            if not os.path.exists(template_path):
-                if filename in self.template_order:
-                    self.template_order.remove(filename)
-                self.template_counts.pop(filename, None)
-                self.template_actions.pop(filename, None)
-                self.template_offsets.pop(filename, None)
-                self.template_delays.pop(filename, None)
-                self.template_delay_types.pop(filename, None)
-                self.template_rois.pop(filename, None)
-                continue
 
             match = self.find_template(
                 screen,
@@ -2164,7 +2354,8 @@ class TeraboxClicker:
             self.fallback_template_dir if is_fallback else self.template_dir
         )
         template_path = os.path.join(target_dir, filename)
-        if not os.path.exists(template_path):
+        self._refresh_template_directory(target_dir)
+        if not self._template_is_registered(template_path):
             self.log(f"⚠️ 템플릿 파일이 존재하지 않습니다: {filename}")
             return False
 
@@ -2719,31 +2910,31 @@ class TeraboxClicker:
         return None
     def _load_template(self, template_path, grayscale=None):
         absolute_path = os.path.abspath(template_path)
-        if not os.path.exists(absolute_path):
-            self.invalidate_template_cache(absolute_path)
+        manifest = self._refresh_template_directory(
+            os.path.dirname(absolute_path)
+        )
+        if absolute_path not in manifest:
             return None, None
 
         use_grayscale = (
             self.match_grayscale if grayscale is None else bool(grayscale)
         )
         cache_key = (absolute_path, use_grayscale)
+        generation = self._template_file_generations.get(absolute_path)
 
-        # 1. Fast Lock-Free Read from global preloaded cache
+        # Lock-free hot path: compare only in-memory generations.
         cached = self._template_cache.get(cache_key)
-        if cached is not None:
-            try:
-                stat = os.stat(absolute_path)
-                signature = (stat.st_mtime_ns, stat.st_size)
-            except OSError:
-                signature = None
-            if cached[0] == signature:
-                return cached[1], cached[2]
+        if (
+            cached is not None
+            and generation is not None
+            and cached[0] == generation
+        ):
+            return cached[1], cached[2]
 
-        # 2. If not cached, load and decode on demand
         template, method = self._load_template_direct(
             absolute_path, grayscale=use_grayscale
         )
-        if template is None and os.path.exists(absolute_path):
+        if template is None and absolute_path in manifest:
             self.log(f"템플릿 로드 실패 ({template_path})")
         return template, method
 
@@ -2845,12 +3036,125 @@ class TeraboxClicker:
             return None
         return left, top, right, bottom
 
-    def _discard_location_hint(self, template_path):
+    def _reset_roi_full_scan_frame(self):
+        with self._hint_lock:
+            self._roi_full_scan_allowed.clear()
+            self._roi_full_scan_budget_remaining = 0
+            self._roi_full_scan_frame_active = False
+
+    def _begin_roi_full_scan_frame(self, screen_shape):
+        screen_shape = tuple(screen_shape[:2])
+        with self._hint_lock:
+            if (
+                self._roi_screen_shape is not None
+                and self._roi_screen_shape != screen_shape
+            ):
+                self._template_location_hints.clear()
+                self._template_hint_hits.clear()
+                self._roi_full_scan_times.clear()
+                self._roi_full_scan_reservation_times.clear()
+                self._roi_full_scan_round_robin.clear()
+            self._roi_screen_shape = screen_shape
+            self._roi_full_scan_allowed.clear()
+            self._roi_full_scan_budget_remaining = max(
+                1, int(self.roi_full_scan_budget)
+            )
+            self._roi_full_scan_frame_active = True
+
+    def _schedule_roi_full_scan_candidates(
+        self, directory, scan_order, rois_dict, now=None
+    ):
+        if (
+            not self.roi_fullscreen_fallback
+            or not isinstance(rois_dict, dict)
+        ):
+            return ()
+
+        with self._hint_lock:
+            if (
+                not self._roi_full_scan_frame_active
+                or self._roi_full_scan_budget_remaining <= 0
+            ):
+                self._roi_full_scan_allowed.clear()
+                return ()
+            slots = self._roi_full_scan_budget_remaining
+
+        priority_paths = []
+        tail_paths = []
+        for index, filename in enumerate(tuple(scan_order)):
+            if filename not in rois_dict:
+                continue
+            absolute_path = os.path.abspath(os.path.join(directory, filename))
+            if index < ROI_PRIORITY_TEMPLATE_COUNT:
+                priority_paths.append(absolute_path)
+            else:
+                tail_paths.append(absolute_path)
+
+        if not priority_paths and not tail_paths:
+            with self._hint_lock:
+                self._roi_full_scan_allowed.clear()
+            return ()
+
+        now = time.monotonic() if now is None else now
+        interval = max(0.0, float(self.force_scan_interval))
+        selected = []
+
+        with self._hint_lock:
+            self._roi_full_scan_allowed.clear()
+
+            def is_due(path):
+                last_scan = self._roi_full_scan_reservation_times.get(path)
+                return last_scan is None or now - last_scan >= interval
+
+            for path in priority_paths:
+                if len(selected) >= slots:
+                    break
+                if is_due(path):
+                    selected.append(path)
+
+            remaining = slots - len(selected)
+            if remaining > 0 and tail_paths:
+                cursor_key = os.path.normcase(os.path.abspath(directory))
+                cursor = (
+                    self._roi_full_scan_round_robin.get(cursor_key, 0)
+                    % len(tail_paths)
+                )
+                last_index = None
+                for offset in range(len(tail_paths)):
+                    index = (cursor + offset) % len(tail_paths)
+                    path = tail_paths[index]
+                    if not is_due(path):
+                        continue
+                    selected.append(path)
+                    last_index = index
+                    if len(selected) >= slots:
+                        break
+                if last_index is None:
+                    self._roi_full_scan_round_robin[cursor_key] = (
+                        cursor + 1
+                    ) % len(tail_paths)
+                else:
+                    self._roi_full_scan_round_robin[cursor_key] = (
+                        last_index + 1
+                    ) % len(tail_paths)
+
+            for path in selected:
+                self._roi_full_scan_reservation_times[path] = now
+            self._roi_full_scan_allowed.update(selected)
+
+        return tuple(selected)
+
+    def _discard_location_hint(
+        self, template_path, clear_full_scan_state=False
+    ):
         absolute_path = os.path.abspath(template_path)
         with self._hint_lock:
             self._template_location_hints.pop(absolute_path, None)
             self._template_hint_hits.pop(absolute_path, None)
-            self._roi_full_scan_times.pop(absolute_path, None)
+            if clear_full_scan_state:
+                self._roi_full_scan_times.pop(absolute_path, None)
+                self._roi_full_scan_reservation_times.pop(absolute_path, None)
+                self._roi_full_scan_allowed.discard(absolute_path)
 
     def _remember_location_hint(
         self, template_path, screen_shape, left, top, width, height, hint_hit
@@ -2866,9 +3170,20 @@ class TeraboxClicker:
                 self._template_hint_hits[absolute_path] = 0
 
     def _roi_full_scan_due(self, template_path):
+        absolute_path = os.path.abspath(template_path)
+        with self._hint_lock:
+            if self._roi_full_scan_frame_active:
+                if (
+                    absolute_path not in self._roi_full_scan_allowed
+                    or self._roi_full_scan_budget_remaining <= 0
+                ):
+                    return False
+                self._roi_full_scan_allowed.remove(absolute_path)
+                self._roi_full_scan_budget_remaining -= 1
+                self._roi_full_scan_times[absolute_path] = time.monotonic()
+                return True
         if not self._automatic_loop_active or not self.frame_change_detection:
             return True
-        absolute_path = os.path.abspath(template_path)
         now = time.monotonic()
         with self._hint_lock:
             last_scan = self._roi_full_scan_times.get(absolute_path, 0.0)
@@ -3108,11 +3423,18 @@ class TeraboxClicker:
                     allow_full_fallback=True,
                 )
 
-            if match is None and (
-                configured_bounds is None
+            needs_full_search = (
+                not has_configured_roi
                 or configured_bounds != full_bounds
-                and self.roi_fullscreen_fallback
-                and self._roi_full_scan_due(absolute_path)
+            )
+            if (
+                match is None
+                and needs_full_search
+                and (
+                    not has_configured_roi
+                    or self.roi_fullscreen_fallback
+                    and self._roi_full_scan_due(absolute_path)
+                )
             ):
                 match = self._find_in_region(
                     screen_img,

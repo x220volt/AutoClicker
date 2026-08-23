@@ -17,6 +17,7 @@ from main import (
     ADB_COMMAND_TIMEOUT,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SIMILARITY_THRESHOLD,
+    TEMPLATE_MANIFEST_REFRESH_INTERVAL,
     TeraboxClicker,
 )
 from cropping_tool import normalize_filename, save_template
@@ -55,6 +56,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             "similarity_threshold": 2,
             "enable_random_click": "false",
             "match_grayscale": "off",
+            "roi_full_scan_budget": 1,
             "template_order": ["UPPER.PNG", "UPPER.PNG", "missing.png"],
             "template_counts": {"UPPER.PNG": -5},
             "template_actions": {"UPPER.PNG": "invalid"},
@@ -74,6 +76,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
         self.assertFalse(clicker.enable_random_click)
         self.assertFalse(clicker.match_grayscale)
+        self.assertEqual(clicker.roi_full_scan_budget, 1)
         self.assertEqual(clicker.template_order, ["UPPER.PNG"])
         self.assertEqual(clicker.template_counts["UPPER.PNG"], 0)
         self.assertEqual(clicker.template_actions["UPPER.PNG"], "click")
@@ -510,12 +513,18 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         screen[20:32, 30:42] = template
 
         original_fromfile = np.fromfile
-        with patch("main.np.fromfile", wraps=original_fromfile) as fromfile:
-            # Grayscale match
+        with patch(
+            "main.np.fromfile", wraps=original_fromfile
+        ) as fromfile, patch(
+            "main.os.path.exists",
+            side_effect=AssertionError("hot path called os.path.exists"),
+        ), patch(
+            "main.os.stat",
+            side_effect=AssertionError("hot path called os.stat"),
+        ):
             match1 = clicker.find_template(
                 screen, str(template_path), threshold=0.99, filename="preloaded.png"
             )
-            # Color match
             clicker.match_grayscale = False
             match2 = clicker.find_template(
                 screen, str(template_path), threshold=0.99, filename="preloaded.png"
@@ -523,8 +532,26 @@ class TeraboxClickerCoreTests(unittest.TestCase):
 
         self.assertIsNotNone(match1)
         self.assertIsNotNone(match2)
-        # Because it was preloaded, np.fromfile must NOT be called at all during find_template
         self.assertEqual(fromfile.call_count, 0)
+
+    def test_template_directory_manifest_is_shared_and_throttled(self):
+        template_dir = Path(self.temp_dir, "templates")
+        self._write_png(template_dir / "shared.png", self._pattern())
+        TeraboxClicker.invalidate_template_cache()
+        clock = [100.0]
+
+        with patch(
+            "main.time.perf_counter", side_effect=lambda: clock[0]
+        ), patch("main.os.scandir", wraps=os.scandir) as scandir:
+            TeraboxClicker._refresh_template_directory(template_dir)
+            TeraboxClicker._refresh_template_directory(template_dir)
+            clock[0] += TEMPLATE_MANIFEST_REFRESH_INTERVAL * 0.5
+            TeraboxClicker._refresh_template_directory(template_dir)
+            self.assertEqual(scandir.call_count, 1)
+
+            clock[0] += TEMPLATE_MANIFEST_REFRESH_INTERVAL
+            TeraboxClicker._refresh_template_directory(template_dir)
+            self.assertEqual(scandir.call_count, 2)
 
     def test_multi_instance_shares_preloaded_template_cache(self):
         template = self._pattern()
@@ -1103,7 +1130,15 @@ class TeraboxClickerCoreTests(unittest.TestCase):
 
         self._write_png(template_path, second_image)
         os.utime(template_path, ns=(old_mtime + 1_000_000_000,) * 2)
-        second, _ = clicker._load_template(str(template_path), grayscale=False)
+        directory_key = os.path.abspath(template_path.parent)
+        next_scan = (
+            TeraboxClicker._template_directory_last_scan[directory_key]
+            + TEMPLATE_MANIFEST_REFRESH_INTERVAL
+        )
+        with patch("main.time.perf_counter", return_value=next_scan):
+            second, _ = clicker._load_template(
+                str(template_path), grayscale=False
+            )
         second_scaled = clicker._get_scaled_template(cache_key, second)
 
         self.assertTrue(np.array_equal(second, second_image))
@@ -1323,7 +1358,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertNotIn("match.hint", stages)
         self.assertIn("match.coarse", stages)
 
-    def test_roi_fullscreen_fallback_is_throttled_until_screen_changes(self):
+    def test_roi_fullscreen_fallback_throttle_survives_screen_dirty(self):
         clicker = TeraboxClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
@@ -1332,16 +1367,106 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         clicker._automatic_loop_active = True
         clicker.force_scan_interval = 5.0
 
-        with patch("main.time.monotonic", side_effect=[100.0, 101.0, 106.0]):
+        with patch("main.time.monotonic", side_effect=[100.0, 101.0]):
             self.assertTrue(clicker._roi_full_scan_due("x.png"))
             self.assertFalse(clicker._roi_full_scan_due("x.png"))
-            self.assertTrue(clicker._roi_full_scan_due("x.png"))
 
         clicker._mark_screen_dirty()
-        with patch("main.time.monotonic", return_value=106.1):
+        with patch("main.time.monotonic", return_value=101.1):
+            self.assertFalse(clicker._roi_full_scan_due("x.png"))
+        with patch("main.time.monotonic", return_value=106.0):
             self.assertTrue(clicker._roi_full_scan_due("x.png"))
 
-    def test_natural_frame_change_resets_roi_fallback_throttle(self):
+    def test_roi_frame_budget_prioritizes_then_round_robins(self):
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="emulator-test",
+            logger=lambda _: None,
+        )
+        clicker._automatic_loop_active = True
+        clicker.roi_full_scan_budget = 2
+        clicker.force_scan_interval = 5.0
+        order = ["a.png", "b.png", "c.png", "d.png", "e.png"]
+        rois = {filename: [0.0, 0.0, 0.5, 1.0] for filename in order}
+
+        clicker._begin_roi_full_scan_frame((100, 200, 3))
+        first = clicker._schedule_roi_full_scan_candidates(
+            clicker.template_dir, order, rois, now=100.0
+        )
+        self.assertEqual(
+            [os.path.basename(path) for path in first],
+            ["a.png", "b.png"],
+        )
+        with patch("main.time.monotonic", return_value=100.0):
+            self.assertTrue(clicker._roi_full_scan_due(first[0]))
+            self.assertTrue(clicker._roi_full_scan_due(first[1]))
+            self.assertFalse(
+                clicker._roi_full_scan_due(
+                    os.path.join(clicker.template_dir, "c.png")
+                )
+            )
+        self.assertEqual(clicker._roi_full_scan_budget_remaining, 0)
+
+        clicker._reset_roi_full_scan_frame()
+        clicker._begin_roi_full_scan_frame((100, 200, 3))
+        second = clicker._schedule_roi_full_scan_candidates(
+            clicker.template_dir, order, rois, now=101.0
+        )
+        self.assertEqual(
+            [os.path.basename(path) for path in second],
+            ["c.png", "d.png"],
+        )
+
+        clicker._reset_roi_full_scan_frame()
+        clicker._begin_roi_full_scan_frame((100, 200, 3))
+        third = clicker._schedule_roi_full_scan_candidates(
+            clicker.template_dir, order, rois, now=102.0
+        )
+        self.assertEqual(
+            [os.path.basename(path) for path in third],
+            ["e.png"],
+        )
+
+    def test_run_once_limits_roi_fullscreen_fallbacks_to_budget(self):
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="emulator-test",
+            logger=lambda _: None,
+        )
+        order = ["a.png", "b.png", "c.png", "d.png"]
+        for filename in order:
+            self._write_png(
+                Path(self.temp_dir, "templates", filename),
+                self._pattern(),
+            )
+        TeraboxClicker._refresh_template_directory(
+            clicker.template_dir, force=True
+        )
+        clicker.template_order = order
+        clicker.template_rois = {
+            filename: [0.0, 0.0, 0.5, 1.0] for filename in order
+        }
+        clicker.dynamic_roi = False
+        clicker.roi_full_scan_budget = 2
+        clicker._automatic_loop_active = True
+        clicker.capture_screen = Mock(
+            return_value=np.zeros((120, 160, 3), dtype=np.uint8)
+        )
+        full_scans = []
+
+        def miss_everywhere(*args, **_kwargs):
+            if args[5] == (0, 0, 160, 120):
+                full_scans.append(os.path.basename(args[4][0]))
+            return None
+
+        with patch.object(
+            clicker, "_find_in_region", side_effect=miss_everywhere
+        ):
+            self.assertFalse(clicker.run_once())
+
+        self.assertEqual(full_scans, ["a.png", "b.png"])
+
+    def test_only_resolution_change_resets_all_roi_state(self):
         clicker = TeraboxClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
@@ -1349,20 +1474,43 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
         clicker._automatic_loop_active = True
         clicker.frame_change_detection = True
-        clicker.force_scan_interval = 5.0
         first = np.zeros((40, 50), dtype=np.uint8)
-        second = first.copy()
-        second[0, 0] = 1
+        changed = first.copy()
+        changed[0, 0] = 1
+        resized = np.zeros((41, 50), dtype=np.uint8)
+        template_path = os.path.abspath("x.png")
+
+        clicker._begin_roi_full_scan_frame(first.shape)
+        clicker._reset_roi_full_scan_frame()
+        with clicker._hint_lock:
+            clicker._template_location_hints[template_path] = (
+                first.shape,
+                0,
+                0,
+                10,
+                10,
+            )
+            clicker._template_hint_hits[template_path] = 2
+            clicker._roi_full_scan_times[template_path] = 100.0
+            clicker._roi_full_scan_reservation_times[template_path] = 100.0
 
         self.assertTrue(clicker._should_scan_frame(first, 100.0))
-        with patch("main.time.monotonic", return_value=100.0):
-            self.assertTrue(clicker._roi_full_scan_due("x.png"))
-        with patch("main.time.monotonic", return_value=101.0):
-            self.assertFalse(clicker._roi_full_scan_due("x.png"))
+        clicker._mark_screen_dirty()
+        self.assertTrue(clicker._should_scan_frame(changed, 101.0))
+        self.assertIn(template_path, clicker._roi_full_scan_times)
+        self.assertIn(
+            template_path, clicker._roi_full_scan_reservation_times
+        )
+        self.assertIn(template_path, clicker._template_location_hints)
 
-        self.assertTrue(clicker._should_scan_frame(second, 101.0))
-        with patch("main.time.monotonic", return_value=101.1):
-            self.assertTrue(clicker._roi_full_scan_due("x.png"))
+        clicker._begin_roi_full_scan_frame(first.shape)
+        self.assertIn(template_path, clicker._roi_full_scan_times)
+        clicker._begin_roi_full_scan_frame(resized.shape)
+        self.assertNotIn(template_path, clicker._roi_full_scan_times)
+        self.assertNotIn(
+            template_path, clicker._roi_full_scan_reservation_times
+        )
+        self.assertNotIn(template_path, clicker._template_location_hints)
 
     def test_wait_elapsed_is_not_subtracted_from_deadline_twice(self):
         clicker = TeraboxClicker(
@@ -1522,6 +1670,9 @@ class TeraboxClickerCoreTests(unittest.TestCase):
                 os.utime(
                     template_path,
                     ns=(old_mtime + 1_000_000_000,) * 2,
+                )
+                TeraboxClicker._refresh_template_directory(
+                    template_path.parent, force=True
                 )
                 second, _ = clicker._load_template(
                     str(template_path), grayscale=False
