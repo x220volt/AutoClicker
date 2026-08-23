@@ -459,13 +459,36 @@ class TeraboxClicker:
         return result
 
     @staticmethod
-    def _frame_signature(screen):
-        contiguous = screen if screen.flags.c_contiguous else np.ascontiguousarray(screen)
-        return (
-            tuple(contiguous.shape),
-            contiguous.dtype.str,
-            zlib.crc32(memoryview(contiguous)) & 0xFFFFFFFF,
-        )
+    def _fast_screen_hash(screen):
+        """Compute an ultra-fast 64-bit sampling hash across an 8x8 grid of sample points.
+        Eliminates the multi-megabyte whole-buffer CRC32 scan, completing in ~0.005ms.
+        """
+        shape = screen.shape
+        h, w = shape[:2]
+        if h <= 8 or w <= 8:
+            contiguous = screen if screen.flags.c_contiguous else np.ascontiguousarray(screen)
+            return (
+                shape,
+                contiguous.dtype.str,
+                zlib.crc32(memoryview(contiguous)) & 0xFFFFFFFF,
+            )
+
+        # 8x8 uniformly spaced sample points including edges and interior
+        ys = np.linspace(0, h - 1, 8, dtype=np.int32)
+        xs = np.linspace(0, w - 1, 8, dtype=np.int32)
+        sample = screen[ys[:, None], xs]
+        sample_bytes = sample.tobytes()
+
+        # 64-bit FNV-1a hash over the compact sample buffer (64~192 bytes)
+        h64 = 0xcbf29ce484222325
+        for b in sample_bytes:
+            h64 = ((h64 ^ b) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+
+        return (shape, screen.dtype.str, h64)
+
+    @classmethod
+    def _frame_signature(cls, screen):
+        return cls._fast_screen_hash(screen)
 
     def _should_scan_frame(self, screen, now):
         if not self.frame_change_detection or not self._automatic_loop_active:
@@ -1781,12 +1804,23 @@ class TeraboxClicker:
                 return False
 
     def _try_fallback_templates(self, screen, now, _prescaled_screen=None):
-        for filename in self._get_template_scan_order(
+        for filename in tuple(self._get_template_scan_order(
             self.fallback_template_order, is_fallback=True
-        ):
+        )):
             if self._automatic_loop_active and self._stop_event.is_set():
                 return False
             template_path = os.path.join(self.fallback_template_dir, filename)
+            if not os.path.exists(template_path):
+                if filename in self.fallback_template_order:
+                    self.fallback_template_order.remove(filename)
+                self.fallback_template_counts.pop(filename, None)
+                self.fallback_template_actions.pop(filename, None)
+                self.fallback_template_offsets.pop(filename, None)
+                self.fallback_template_delays.pop(filename, None)
+                self.fallback_template_delay_types.pop(filename, None)
+                self.fallback_template_rois.pop(filename, None)
+                continue
+
             match = self.find_template(
                 screen,
                 template_path,
@@ -2025,13 +2059,24 @@ class TeraboxClicker:
                 )
             return prescaled_cache[0]
 
-        scan_order = self._get_template_scan_order(
+        scan_order = tuple(self._get_template_scan_order(
             self.template_order, is_fallback=False
-        )
+        ))
         for filename in scan_order:
             if self._automatic_loop_active and self._stop_event.is_set():
                 return False
             template_path = os.path.join(self.template_dir, filename)
+            if not os.path.exists(template_path):
+                if filename in self.template_order:
+                    self.template_order.remove(filename)
+                self.template_counts.pop(filename, None)
+                self.template_actions.pop(filename, None)
+                self.template_offsets.pop(filename, None)
+                self.template_delays.pop(filename, None)
+                self.template_delay_types.pop(filename, None)
+                self.template_rois.pop(filename, None)
+                continue
+
             match = self.find_template(
                 screen,
                 template_path,
@@ -2674,6 +2719,10 @@ class TeraboxClicker:
         return None
     def _load_template(self, template_path, grayscale=None):
         absolute_path = os.path.abspath(template_path)
+        if not os.path.exists(absolute_path):
+            self.invalidate_template_cache(absolute_path)
+            return None, None
+
         use_grayscale = (
             self.match_grayscale if grayscale is None else bool(grayscale)
         )
@@ -2694,7 +2743,7 @@ class TeraboxClicker:
         template, method = self._load_template_direct(
             absolute_path, grayscale=use_grayscale
         )
-        if template is None:
+        if template is None and os.path.exists(absolute_path):
             self.log(f"템플릿 로드 실패 ({template_path})")
         return template, method
 

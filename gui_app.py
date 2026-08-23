@@ -17,7 +17,7 @@ except Exception:
 
 from main import TeraboxClicker, CONFIG_PATH, ADB_COMMAND_TIMEOUT
 
-VERSION = "v0.3.8"
+VERSION = "v0.3.9"
 
 # 앱 전역 테마를 Dark 모드로 고정
 ctk.set_appearance_mode("Dark")
@@ -1345,6 +1345,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         )
         self.clicker_thread = None
         self.settings_window = None
+        self._last_bg_timer_update = 0.0
 
         # --- Top Header Bar inside Tab ---
         self.header_frame = ctk.CTkFrame(self, fg_color=COLOR_CARD_BG, corner_radius=RADIUS_MD)
@@ -1552,6 +1553,38 @@ class InstanceTabFrame(ctk.CTkFrame):
         )
         self.crop_button.pack(side="right", padx=(0, 5))
 
+        # Search Bar for Primary Templates
+        self.primary_search_frame = ctk.CTkFrame(self.tab_primary, fg_color="transparent")
+        self.primary_search_frame.pack(fill="x", padx=5, pady=(0, 5))
+
+        self.primary_search_var = tk.StringVar()
+        self.primary_search_entry = ctk.CTkEntry(
+            self.primary_search_frame,
+            placeholder_text="🔍 템플릿 검색...",
+            textvariable=self.primary_search_var,
+            height=28,
+            corner_radius=RADIUS_SM,
+            font=ctk.CTkFont(size=12),
+        )
+        self.primary_search_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self.primary_search_var.trace_add("write", lambda *args: self.filter_templates(is_fallback=False))
+        self.primary_search_entry.bind("<Escape>", lambda e: self.clear_search(is_fallback=False))
+
+        self.primary_clear_search_btn = ctk.CTkButton(
+            self.primary_search_frame,
+            text="✕",
+            width=28,
+            height=28,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_SM,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=lambda: self.clear_search(is_fallback=False)
+        )
+        self.primary_clear_search_btn.pack(side="right")
+
+        self.primary_no_match_label = None
+
         self.templates_frame = ctk.CTkScrollableFrame(self.tab_primary)
         self.templates_frame.pack(fill="both", expand=True, padx=5, pady=(0, 5))
 
@@ -1598,6 +1631,38 @@ class InstanceTabFrame(ctk.CTkFrame):
             state="disabled"
         )
         self.crop_fb_button.pack(side="right", padx=(0, 5))
+
+        # Search Bar for Fallback Templates
+        self.fallback_search_frame = ctk.CTkFrame(self.tab_fallback, fg_color="transparent")
+        self.fallback_search_frame.pack(fill="x", padx=5, pady=(0, 5))
+
+        self.fallback_search_var = tk.StringVar()
+        self.fallback_search_entry = ctk.CTkEntry(
+            self.fallback_search_frame,
+            placeholder_text="🔍 복구 템플릿 검색...",
+            textvariable=self.fallback_search_var,
+            height=28,
+            corner_radius=RADIUS_SM,
+            font=ctk.CTkFont(size=12),
+        )
+        self.fallback_search_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self.fallback_search_var.trace_add("write", lambda *args: self.filter_templates(is_fallback=True))
+        self.fallback_search_entry.bind("<Escape>", lambda e: self.clear_search(is_fallback=True))
+
+        self.fallback_clear_search_btn = ctk.CTkButton(
+            self.fallback_search_frame,
+            text="✕",
+            width=28,
+            height=28,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_SM,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=lambda: self.clear_search(is_fallback=True)
+        )
+        self.fallback_clear_search_btn.pack(side="right")
+
+        self.fb_no_match_label = None
 
         self.fallback_templates_frame = ctk.CTkScrollableFrame(self.tab_fallback)
         self.fallback_templates_frame.pack(fill="both", expand=True, padx=5, pady=(0, 5))
@@ -2197,6 +2262,69 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         self.clicker.shutdown()
 
+    def clear_search(self, is_fallback=False):
+        if is_fallback:
+            self.fallback_search_var.set("")
+            try:
+                self.fallback_search_entry.focus_set()
+            except Exception:
+                pass
+        else:
+            self.primary_search_var.set("")
+            try:
+                self.primary_search_entry.focus_set()
+            except Exception:
+                pass
+
+    def focus_search_box(self):
+        try:
+            curr_tab = self.template_tabview.get()
+            if "미매칭" in curr_tab:
+                self.fallback_search_entry.focus_set()
+                self.fallback_search_entry.select_range(0, 'end')
+            else:
+                self.primary_search_entry.focus_set()
+                self.primary_search_entry.select_range(0, 'end')
+        except Exception:
+            pass
+
+    def filter_templates(self, is_fallback=False):
+        if self._destroyed or not self.winfo_exists():
+            return
+        query = (
+            self.fallback_search_var.get() if is_fallback else self.primary_search_var.get()
+        ).strip().lower()
+        order = self.clicker.fallback_template_order if is_fallback else self.clicker.template_order
+        row_dict = self.fallback_template_row_widgets if is_fallback else self.template_row_widgets
+
+        visible_count = 0
+        for filename in order:
+            if filename in row_dict:
+                w = row_dict[filename]
+                if not query or query in filename.lower():
+                    w.frame.pack(fill="x", padx=5, pady=1)
+                    visible_count += 1
+                else:
+                    w.frame.pack_forget()
+
+        parent_frame = self.fallback_templates_frame if is_fallback else self.templates_frame
+        attr_name = "fb_no_match_label" if is_fallback else "primary_no_match_label"
+        lbl = getattr(self, attr_name, None)
+
+        if visible_count == 0 and len(order) > 0 and query:
+            if lbl is None or not lbl.winfo_exists():
+                lbl = ctk.CTkLabel(
+                    parent_frame,
+                    text="🔍 일치하는 템플릿이 없습니다.",
+                    font=ctk.CTkFont(size=12),
+                    text_color=COLOR_TEXT_MUTED,
+                )
+                setattr(self, attr_name, lbl)
+            lbl.pack(pady=20)
+        else:
+            if lbl is not None and lbl.winfo_exists():
+                lbl.pack_forget()
+
     def refresh_templates(self):
         if self._destroyed or not self.winfo_exists():
             return
@@ -2207,6 +2335,8 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.fallback_template_row_widgets = {}
         self.template_count_labels = {}
         self.fallback_template_count_labels = {}
+        self.primary_no_match_label = None
+        self.fb_no_match_label = None
 
         # 1. 기본 템플릿 목록 렌더링
         for widget in self.templates_frame.winfo_children():
@@ -2232,6 +2362,9 @@ class InstanceTabFrame(ctk.CTkFrame):
             self.fb_final_y_entry.delete(0, "end")
             self.fb_final_y_entry.insert(0, str(coords[1]))
             self.update_fb_final_coord_visibility(curr_fb_action)
+
+        self.filter_templates(is_fallback=False)
+        self.filter_templates(is_fallback=True)
 
     def create_template_row(self, parent_frame, filename, index, is_fallback=False):
         row_frame = ctk.CTkFrame(parent_frame, fg_color="transparent")
@@ -3098,8 +3231,25 @@ class App(ctk.CTk):
         # Load saved instances or create initial tab
         self.load_and_initialize_tabs()
 
+        # Keyboard shortcuts
+        self.bind("<Control-f>", self.on_ctrl_f)
+        self.bind("<Control-F>", self.on_ctrl_f)
+
         # Auto refresh devices after short delay
         self.after(500, self.refresh_all_devices)
+
+    def get_current_tab_frame(self):
+        try:
+            curr_tab_name = self.tabview.get()
+            return self.tab_frames.get(curr_tab_name)
+        except Exception:
+            return None
+
+    def on_ctrl_f(self, event=None):
+        frame = self.get_current_tab_frame()
+        if frame and hasattr(frame, "focus_search_box"):
+            frame.focus_search_box()
+            return "break"
 
     @staticmethod
     def _preload_configured_templates():
@@ -3158,12 +3308,21 @@ class App(ctk.CTk):
         except Exception:
             current_tab = None
 
+        now = time.monotonic()
         for name, frame in tuple(self.tab_frames.items()):
             try:
                 if name == current_tab:
                     frame.update_timer_display()
                 else:
+                    # Lightweight warning status check every 500ms
                     frame.check_tab_warning_status()
+                    # Throttle background tab UI text updates to every 2.5 seconds
+                    last_update = getattr(frame, "_last_bg_timer_update", 0.0)
+                    if not isinstance(last_update, (int, float)):
+                        last_update = 0.0
+                    if now - last_update >= 2.5:
+                        frame._last_bg_timer_update = now
+                        frame.update_timer_display()
             except Exception:
                 pass
         self._timer_pump_id = self.after(500, self._pump_timer_updates)
@@ -3310,15 +3469,32 @@ class App(ctk.CTk):
                     w = row_dict[filename]
                     w.frame.pack(fill="x", padx=5, pady=1)
                     w.priority.configure(text=f"{idx+1}.")
+            frame.filter_templates(is_fallback=is_fallback)
 
     def remove_template_from_all_tabs(self, filename, is_fallback=False):
         for frame in tuple(self.tab_frames.values()):
             if is_fallback:
                 order = frame.clicker.fallback_template_order
+                if filename in order:
+                    order.remove(filename)
+                frame.clicker.fallback_template_counts.pop(filename, None)
+                frame.clicker.fallback_template_actions.pop(filename, None)
+                frame.clicker.fallback_template_offsets.pop(filename, None)
+                frame.clicker.fallback_template_delays.pop(filename, None)
+                frame.clicker.fallback_template_delay_types.pop(filename, None)
+                frame.clicker.fallback_template_rois.pop(filename, None)
                 row_dict = frame.fallback_template_row_widgets
                 count_dict = frame.fallback_template_count_labels
             else:
                 order = frame.clicker.template_order
+                if filename in order:
+                    order.remove(filename)
+                frame.clicker.template_counts.pop(filename, None)
+                frame.clicker.template_actions.pop(filename, None)
+                frame.clicker.template_offsets.pop(filename, None)
+                frame.clicker.template_delays.pop(filename, None)
+                frame.clicker.template_delay_types.pop(filename, None)
+                frame.clicker.template_rois.pop(filename, None)
                 row_dict = frame.template_row_widgets
                 count_dict = frame.template_count_labels
             if filename in row_dict:
@@ -3329,6 +3505,7 @@ class App(ctk.CTk):
             for idx, fn in enumerate(order):
                 if fn in row_dict:
                     row_dict[fn].priority.configure(text=f"{idx+1}.")
+            frame.filter_templates(is_fallback=is_fallback)
 
     def add_template_to_all_tabs(self, filename, offset_x=0, offset_y=0, is_fallback=False):
         for frame in tuple(self.tab_frames.values()):
@@ -3354,6 +3531,7 @@ class App(ctk.CTk):
             row_dict = frame.fallback_template_row_widgets if is_fallback else frame.template_row_widgets
             if filename not in row_dict:
                 frame.create_template_row(parent, filename, idx, is_fallback=is_fallback)
+            frame.filter_templates(is_fallback=is_fallback)
 
     def reset_all_template_counts(self, is_fallback=False):
         for frame in tuple(self.tab_frames.values()):

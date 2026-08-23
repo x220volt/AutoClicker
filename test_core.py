@@ -2522,6 +2522,199 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         success, msg = clicker.rename_template("btn1.png", "btn1.png")
         self.assertTrue(success)
 
+    def test_template_filtering_logic(self):
+        from gui_app import InstanceTabFrame
+        mock_frame = MagicMock()
+        mock_frame._destroyed = False
+        mock_frame.winfo_exists.return_value = True
+
+        # 1. Primary search with matching query
+        mock_frame.primary_search_var = MagicMock()
+        mock_frame.primary_search_var.get.return_value = "login"
+        mock_frame.clicker = MagicMock()
+        mock_frame.clicker.template_order = ["btn_login.png", "btn_cancel.png", "login_popup.png"]
+
+        w_login = MagicMock()
+        w_cancel = MagicMock()
+        w_popup = MagicMock()
+        mock_frame.template_row_widgets = {
+            "btn_login.png": w_login,
+            "btn_cancel.png": w_cancel,
+            "login_popup.png": w_popup,
+        }
+        mock_frame.templates_frame = MagicMock()
+        mock_frame.primary_no_match_label = None
+
+        InstanceTabFrame.filter_templates(mock_frame, is_fallback=False)
+
+        w_login.frame.pack.assert_called_with(fill="x", padx=5, pady=1)
+        w_cancel.frame.pack_forget.assert_called_once()
+        w_popup.frame.pack.assert_called_with(fill="x", padx=5, pady=1)
+
+        # 2. Fallback search with no match
+        mock_frame.fallback_search_var = MagicMock()
+        mock_frame.fallback_search_var.get.return_value = "not_found"
+        mock_frame.clicker.fallback_template_order = ["fb_retry.png"]
+        w_retry = MagicMock()
+        mock_frame.fallback_template_row_widgets = {"fb_retry.png": w_retry}
+        mock_frame.fallback_templates_frame = MagicMock()
+        mock_frame.fb_no_match_label = MagicMock()
+        mock_frame.fb_no_match_label.winfo_exists.return_value = True
+
+        InstanceTabFrame.filter_templates(mock_frame, is_fallback=True)
+
+        w_retry.frame.pack_forget.assert_called_once()
+        mock_frame.fb_no_match_label.pack.assert_called_with(pady=20)
+
+        # 3. Clear search restores all
+        mock_frame.primary_search_var.get.return_value = ""
+        w_cancel.frame.pack.reset_mock()
+        InstanceTabFrame.filter_templates(mock_frame, is_fallback=False)
+        w_cancel.frame.pack.assert_called_with(fill="x", padx=5, pady=1)
+
+    def test_remove_template_from_all_tabs_cleans_clicker_memory(self):
+        from gui_app import App
+        mock_app = MagicMock()
+        mock_frame1 = MagicMock()
+        mock_frame2 = MagicMock()
+
+        mock_clicker1 = MagicMock()
+        mock_clicker1.template_order = ["t1.png", "target.png", "t2.png"]
+        mock_clicker1.template_counts = {"target.png": 5, "t1.png": 1}
+        mock_clicker1.template_actions = {"target.png": "click"}
+        mock_clicker1.template_offsets = {"target.png": [0, 0]}
+        mock_clicker1.template_delays = {"target.png": 1.0}
+        mock_clicker1.template_delay_types = {"target.png": "pre"}
+        mock_clicker1.template_rois = {"target.png": [0, 0, 1, 1]}
+
+        mock_clicker2 = MagicMock()
+        mock_clicker2.template_order = ["target.png", "t3.png"]
+        mock_clicker2.template_counts = {"target.png": 2}
+        mock_clicker2.template_actions = {"target.png": "double"}
+        mock_clicker2.template_offsets = {"target.png": [1, 1]}
+        mock_clicker2.template_delays = {"target.png": 0.5}
+        mock_clicker2.template_delay_types = {"target.png": "post"}
+        mock_clicker2.template_rois = {"target.png": [0, 0, 1, 1]}
+
+        mock_frame1.clicker = mock_clicker1
+        mock_frame1.template_row_widgets = {"target.png": MagicMock()}
+        mock_frame1.template_count_labels = {"target.png": MagicMock()}
+
+        mock_frame2.clicker = mock_clicker2
+        mock_frame2.template_row_widgets = {"target.png": MagicMock()}
+        mock_frame2.template_count_labels = {"target.png": MagicMock()}
+
+        mock_app.tab_frames = {"inst1": mock_frame1, "inst2": mock_frame2}
+
+        App.remove_template_from_all_tabs(mock_app, "target.png", is_fallback=False)
+
+        self.assertNotIn("target.png", mock_clicker1.template_order)
+        self.assertNotIn("target.png", mock_clicker1.template_counts)
+        self.assertNotIn("target.png", mock_clicker1.template_actions)
+        self.assertNotIn("target.png", mock_clicker2.template_order)
+        self.assertNotIn("target.png", mock_clicker2.template_counts)
+        self.assertNotIn("target.png", mock_clicker2.template_actions)
+        self.assertNotIn("target.png", mock_frame1.template_row_widgets)
+        self.assertNotIn("target.png", mock_frame2.template_row_widgets)
+
+    def test_load_template_missing_file_does_not_log_error(self):
+        logs = []
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="127.0.0.1:5555",
+            logger=lambda msg: logs.append(msg),
+        )
+        non_existent_path = os.path.join(self.temp_dir, "templates", "deleted_file.png")
+        template, method = clicker._load_template(non_existent_path)
+        self.assertIsNone(template)
+        self.assertIsNone(method)
+        # Should not spam error logs when file simply doesn't exist
+        for log in logs:
+            self.assertNotIn("템플릿 로드 실패", log)
+
+    def test_missing_template_file_auto_pruned_in_scan_loop(self):
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="127.0.0.1:5555",
+            logger=lambda _: None,
+        )
+        clicker.template_order = ["non_existent_1.png", "non_existent_2.png"]
+        clicker.template_counts = {"non_existent_1.png": 3}
+        clicker._automatic_loop_active = False
+
+        # Mock capture_screen to return a blank valid image
+        screen = np.zeros((100, 100, 3), dtype=np.uint8)
+        clicker.capture_screen = MagicMock(return_value=screen)
+        clicker.run_once()
+
+        # Both missing files should have been automatically pruned from template_order
+        self.assertEqual(clicker.template_order, [])
+        self.assertEqual(clicker.template_counts, {})
+
+    def test_fast_screen_hash_detection(self):
+        screen1 = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        screen2 = screen1.copy()
+        screen3 = screen1.copy()
+        screen3[540, 960] = [255, 255, 255]  # Center pixel change
+
+        hash1 = TeraboxClicker._fast_screen_hash(screen1)
+        hash2 = TeraboxClicker._fast_screen_hash(screen2)
+        hash3 = TeraboxClicker._fast_screen_hash(screen3)
+
+        self.assertEqual(hash1, hash2)
+        # Should be different when content changes
+        screen_corner = screen1.copy()
+        screen_corner[0, 0] = [100, 100, 100]
+        hash_corner = TeraboxClicker._fast_screen_hash(screen_corner)
+        self.assertNotEqual(hash1, hash_corner)
+
+    def test_background_tab_timer_throttling(self):
+        from gui_app import App
+        mock_app = MagicMock()
+        mock_app._closing = False
+        mock_app.tabview.get.return_value = "ActiveTab"
+
+        active_frame = MagicMock()
+        bg_frame = MagicMock()
+        bg_frame._last_bg_timer_update = 0.0
+
+        mock_app.tab_frames = {
+            "ActiveTab": active_frame,
+            "BgTab": bg_frame,
+        }
+
+        # 1. First pump: Active tab updates display, BgTab does warning check + initial update
+        with patch("time.monotonic", return_value=100.0):
+            App._pump_timer_updates(mock_app)
+            active_frame.update_timer_display.assert_called_once()
+            bg_frame.check_tab_warning_status.assert_called_once()
+            bg_frame.update_timer_display.assert_called_once()
+
+        # 2. Second pump within 2.5s (at 101.0s):
+        # Active tab updates display, BgTab only runs warning check (display throttled)
+        active_frame.update_timer_display.reset_mock()
+        bg_frame.check_tab_warning_status.reset_mock()
+        bg_frame.update_timer_display.reset_mock()
+
+        with patch("time.monotonic", return_value=101.0):
+            App._pump_timer_updates(mock_app)
+            active_frame.update_timer_display.assert_called_once()
+            bg_frame.check_tab_warning_status.assert_called_once()
+            bg_frame.update_timer_display.assert_not_called()
+
+        # 3. Third pump after 2.5s (at 102.6s):
+        # BgTab display is updated again
+        active_frame.update_timer_display.reset_mock()
+        bg_frame.check_tab_warning_status.reset_mock()
+        bg_frame.update_timer_display.reset_mock()
+
+        with patch("time.monotonic", return_value=102.6):
+            App._pump_timer_updates(mock_app)
+            active_frame.update_timer_display.assert_called_once()
+            bg_frame.check_tab_warning_status.assert_called_once()
+            bg_frame.update_timer_display.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
 
