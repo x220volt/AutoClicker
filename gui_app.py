@@ -1256,8 +1256,8 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.clear_log_btn = ctk.CTkButton(
             self.log_top_header,
             text="🧹 지우기",
-            width=65,
-            height=24,
+            width=70,
+            height=28,
             fg_color=COLOR_NEUTRAL,
             hover_color=COLOR_NEUTRAL_HOVER,
             corner_radius=RADIUS_SM,
@@ -1298,8 +1298,8 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.reset_counts_button = ctk.CTkButton(
             self.primary_header_frame,
             text="🔄 카운트 초기화",
-            width=110,
-            height=28,
+            width=120,
+            height=30,
             fg_color=COLOR_DANGER,
             hover_color=COLOR_DANGER_HOVER,
             corner_radius=RADIUS_MD,
@@ -1310,8 +1310,8 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.crop_button = ctk.CTkButton(
             self.primary_header_frame,
             text="➕ 템플릿 등록",
-            width=115,
-            height=28,
+            width=120,
+            height=30,
             fg_color=COLOR_SUCCESS,
             hover_color=COLOR_SUCCESS_HOVER,
             corner_radius=RADIUS_MD,
@@ -1345,8 +1345,8 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.reset_fb_counts_button = ctk.CTkButton(
             self.fallback_header_frame,
             text="🔄 카운트 초기화",
-            width=110,
-            height=28,
+            width=120,
+            height=30,
             fg_color=COLOR_DANGER,
             hover_color=COLOR_DANGER_HOVER,
             corner_radius=RADIUS_MD,
@@ -1357,8 +1357,8 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.crop_fb_button = ctk.CTkButton(
             self.fallback_header_frame,
             text="➕ 복구 템플릿 등록",
-            width=135,
-            height=28,
+            width=140,
+            height=30,
             fg_color=COLOR_PRIMARY,
             hover_color=COLOR_PRIMARY_HOVER,
             corner_radius=RADIUS_MD,
@@ -1379,7 +1379,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             text="📌 최종 탈출 동작:",
             font=ctk.CTkFont(size=12, weight="bold")
         )
-        self.fb_final_title.pack(side="left", padx=(10, 8), pady=8)
+        self.fb_final_title.pack(side="left", padx=(12, 8), pady=8)
 
         curr_fb_action = getattr(self.clicker, 'fallback_final_action', 'none')
         curr_fb_label = NO_MATCH_ACTION_MAP.get(curr_fb_action, "사용 안 함 (Disabled)")
@@ -1393,22 +1393,22 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.fb_final_combo = ctk.CTkOptionMenu(
             self.fallback_final_frame,
             values=final_action_options,
-            width=190,
-            height=28,
+            width=200,
+            height=30,
             corner_radius=RADIUS_SM,
             command=self.on_fallback_final_action_changed
         )
         self.fb_final_combo.set(curr_fb_label)
-        self.fb_final_combo.pack(side="left", padx=(0, 6), pady=8)
+        self.fb_final_combo.pack(side="left", padx=(0, 8), pady=8)
 
         # Coordinate inputs
         self.fb_final_coord_frame = ctk.CTkFrame(self.fallback_final_frame, fg_color="transparent")
-        self.fb_final_coord_frame.pack(side="left", padx=(0, 5), pady=8)
+        self.fb_final_coord_frame.pack(side="left", padx=(0, 8), pady=8)
 
         coords = getattr(self.clicker, 'fallback_final_coords', [500, 500])
         self.fb_final_x_label = ctk.CTkLabel(self.fb_final_coord_frame, text="X:")
         self.fb_final_x_label.pack(side="left", padx=(0, 2))
-        self.fb_final_x_entry = ctk.CTkEntry(self.fb_final_coord_frame, width=50, height=28, corner_radius=RADIUS_SM)
+        self.fb_final_x_entry = ctk.CTkEntry(self.fb_final_coord_frame, width=55, height=30, corner_radius=RADIUS_SM)
         self.fb_final_x_entry.insert(0, str(coords[0]))
         self.fb_final_x_entry.pack(side="left", padx=(0, 6))
         self.fb_final_x_entry.bind("<KeyRelease>", self.save_fallback_final_settings)
@@ -1416,7 +1416,7 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         self.fb_final_y_label = ctk.CTkLabel(self.fb_final_coord_frame, text="Y:")
         self.fb_final_y_label.pack(side="left", padx=(0, 2))
-        self.fb_final_y_entry = ctk.CTkEntry(self.fb_final_coord_frame, width=50, height=28, corner_radius=RADIUS_SM)
+        self.fb_final_y_entry = ctk.CTkEntry(self.fb_final_coord_frame, width=55, height=30, corner_radius=RADIUS_SM)
         self.fb_final_y_entry.insert(0, str(coords[1]))
         self.fb_final_y_entry.pack(side="left", padx=(0, 6))
         self.fb_final_y_entry.bind("<KeyRelease>", self.save_fallback_final_settings)
@@ -1425,8 +1425,8 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.fb_final_pick_btn = ctk.CTkButton(
             self.fb_final_coord_frame,
             text="🎯 좌표 선택",
-            width=90,
-            height=28,
+            width=95,
+            height=30,
             fg_color=COLOR_NEUTRAL,
             hover_color=COLOR_NEUTRAL_HOVER,
             corner_radius=RADIUS_SM,
@@ -1440,14 +1440,14 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.fb_final_test_btn = ctk.CTkButton(
             self.fallback_final_frame,
             text="⚡ 즉시 실행",
-            width=90,
-            height=28,
+            width=95,
+            height=30,
             fg_color=COLOR_WARNING,
             hover_color=COLOR_WARNING_HOVER,
             corner_radius=RADIUS_SM,
             command=self.test_fallback_final_action
         )
-        self.fb_final_test_btn.pack(side="right", padx=(5, 10), pady=8)
+        self.fb_final_test_btn.pack(side="right", padx=(8, 12), pady=8)
 
         self.refresh_templates()
 
