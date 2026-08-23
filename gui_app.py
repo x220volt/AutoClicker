@@ -1409,7 +1409,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         )
         self.status_label.pack(side="left", padx=12, pady=8)
 
-        # Right side buttons in tab header: Settings & Delete Tab
+        # Right side button in tab header: Delete Tab
         self.delete_tab_btn = ctk.CTkButton(
             self.header_frame,
             text="탭 닫기",
@@ -1421,18 +1421,6 @@ class InstanceTabFrame(ctk.CTkFrame):
             command=lambda: self.app_owner.remove_instance_tab(self.tab_name)
         )
         self.delete_tab_btn.pack(side="right", padx=(4, 12), pady=8)
-
-        self.settings_button = ctk.CTkButton(
-            self.header_frame,
-            text="설정",
-            width=80,
-            height=32,
-            fg_color=COLOR_NEUTRAL,
-            hover_color=COLOR_NEUTRAL_HOVER,
-            corner_radius=RADIUS_MD,
-            command=self.open_settings_window
-        )
-        self.settings_button.pack(side="right", padx=4, pady=8)
 
         # --- Real-time Status & Timer Info Bar ---
         self.timer_bar_frame = ctk.CTkFrame(self, fg_color=COLOR_CARD_BG, corner_radius=RADIUS_MD)
@@ -3084,6 +3072,20 @@ class App(ctk.CTk):
         )
         self.add_tab_btn.pack(side="left", padx=4, pady=8)
 
+        # Settings Button (Top-Right 최상단 우측)
+        self.settings_btn = ctk.CTkButton(
+            self.top_bar,
+            text="설정",
+            font=btn_font,
+            width=80,
+            height=34,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_MD,
+            command=self.open_global_settings
+        )
+        self.settings_btn.pack(side="right", padx=(4, 16), pady=8)
+
 
         # --- Main Workspace: Tab View ---
         self.tabview = ctk.CTkTabview(self)
@@ -3203,6 +3205,17 @@ class App(ctk.CTk):
 
     def add_new_instance_dialog(self):
         AddInstanceWindow(self)
+
+    def open_global_settings(self):
+        try:
+            current_tab = self.tabview.get()
+            tab_frame = self.tab_frames.get(current_tab)
+        except Exception:
+            tab_frame = None
+        if tab_frame is None and self.tab_frames:
+            tab_frame = next(iter(self.tab_frames.values()))
+        if tab_frame is not None:
+            tab_frame.open_settings_window()
 
     def add_instance_tab(self, device_address="127.0.0.1:5555"):
         device_address = str(device_address).strip()
