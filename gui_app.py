@@ -22,12 +22,42 @@ VERSION = "v0.3.7"
 # 앱 전역 테마를 Dark 모드로 고정
 ctk.set_appearance_mode("Dark")
 
+# --- Unified Modern Design System Color & Style Tokens ---
+COLOR_PRIMARY = "#2563EB"         # Blue - Primary Actions / Focus / Connect
+COLOR_PRIMARY_HOVER = "#1D4ED8"
+
+COLOR_SUCCESS = "#16A34A"         # Green - Start / Active / Single Click
+COLOR_SUCCESS_HOVER = "#15803D"
+
+COLOR_DANGER = "#DC2626"          # Red - Stop / Disconnect / Delete / Reset
+COLOR_DANGER_HOVER = "#B91C1C"
+
+COLOR_WARNING = "#D97706"         # Amber - Back Action / Pre-Delay / Warnings
+COLOR_WARNING_HOVER = "#B45309"
+
+COLOR_INFO = "#4F46E5"            # Indigo - Post-Delay / Special Actions
+COLOR_INFO_HOVER = "#4338CA"
+
+COLOR_NEUTRAL = "#374151"         # Slate - Settings / Neutral / Utility
+COLOR_NEUTRAL_HOVER = "#4B5563"
+
+COLOR_CARD_BG = ("#2B2F3A", "#181B22")
+COLOR_CARD_INNER = ("#333945", "#212631")
+COLOR_BORDER = "#2E3545"
+
+COLOR_TEXT_MUTED = "#94A3B8"
+COLOR_TEXT_PRIMARY = "#F1F5F9"
+
+RADIUS_SM = 5
+RADIUS_MD = 6
+RADIUS_LG = 8
+
 NO_MATCH_ACTION_MAP = {
-    "fallback_list": "📋 미매칭 복구 템플릿 목록 매칭 (Fallback Match List)",
+    "fallback_list": "📋 미매칭 복구 템플릿 목록 매칭 (Fallback List)",
     "none": "사용 안 함 (Disabled)",
     "random_click": "🎲 화면 랜덤 클릭 (Random Click)",
     "custom_click": "👆 특정 좌표 클릭 (Custom Click)",
-    "custom_double_click": "✌️ 특정 좌표 클릭클릭 (Double Click)",
+    "custom_double_click": "✌️ 특정 좌표 더블클릭 (Double Click)",
     "back": "↩️ 뒤로가기 (Back Key)"
 }
 REVERSE_NO_MATCH_ACTION_MAP = {v: k for k, v in NO_MATCH_ACTION_MAP.items()}
@@ -35,21 +65,21 @@ REVERSE_NO_MATCH_ACTION_MAP = {v: k for k, v in NO_MATCH_ACTION_MAP.items()}
 
 def get_action_button_style(action):
     if action == "back":
-        return "Back (뒤로가기)", "#E67E22", "#D35400"
+        return "↩️ Back (뒤로)", COLOR_WARNING, COLOR_WARNING_HOVER
     elif action in ("double_click", "click_click", "double"):
-        return "Double (클릭클릭)", "#2980B9", "#1F618D"
+        return "✌️ Double (더블)", COLOR_PRIMARY, COLOR_PRIMARY_HOVER
     else:
-        return "Click (클릭)", "#27AE60", "#1E8449"
+        return "👆 Click (클릭)", COLOR_SUCCESS, COLOR_SUCCESS_HOVER
 
 
 def get_delay_button_style(delay, delay_type="pre"):
     if delay > 0:
         if delay_type == "post":
-            return f"⏱️후 {delay:g}s", "#1A5276", "#2471A3"
+            return f"⏱️후 {delay:g}s", COLOR_INFO, COLOR_INFO_HOVER
         else:
-            return f"⏱️전 {delay:g}s", "#7D6608", "#9A7D0A"
+            return f"⏱️전 {delay:g}s", COLOR_WARNING, COLOR_WARNING_HOVER
     else:
-        return "⏱️ 0s", "#333333", "#444444"
+        return "⏱️ 0s", COLOR_NEUTRAL, COLOR_NEUTRAL_HOVER
 
 
 class TemplateRowWidgets:
@@ -379,6 +409,10 @@ class SettingsWindow(ctk.CTkToplevel):
             self.coord_frame, 
             text="🎯 화면에서 좌표 선택", 
             width=140,
+            height=30,
+            fg_color=COLOR_PRIMARY,
+            hover_color=COLOR_PRIMARY_HOVER,
+            corner_radius=RADIUS_SM,
             command=self.pick_coords_from_screen
         )
         self.pick_coord_btn.pack(side="right")
@@ -386,7 +420,15 @@ class SettingsWindow(ctk.CTkToplevel):
         self.update_coord_frame_visibility(curr_action)
 
         # Close Button
-        self.close_btn = ctk.CTkButton(self, text="Close (닫기)", command=self.close_window)
+        self.close_btn = ctk.CTkButton(
+            self,
+            text="닫기 (Close)",
+            height=34,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_MD,
+            command=self.close_window
+        )
         self.close_btn.pack(fill="x", padx=30, pady=(10, 15))
 
         self.protocol("WM_DELETE_WINDOW", self.close_window)
@@ -648,10 +690,12 @@ class RenameTemplateWindow(ctk.CTkToplevel):
             self.btn_frame,
             text="변경 (Rename)",
             command=self.confirm_rename,
-            width=150,
-            fg_color="#2ECC71",
-            hover_color="#27AE60",
-            text_color="black",
+            width=140,
+            height=32,
+            fg_color=COLOR_SUCCESS,
+            hover_color=COLOR_SUCCESS_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            corner_radius=RADIUS_MD,
             font=ctk.CTkFont(weight="bold")
         )
         self.confirm_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
@@ -660,9 +704,11 @@ class RenameTemplateWindow(ctk.CTkToplevel):
             self.btn_frame,
             text="취소 (Cancel)",
             command=self.close_window,
-            width=150,
-            fg_color="#7F8C8D",
-            hover_color="#95A5A6"
+            width=140,
+            height=32,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_MD,
         )
         self.cancel_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
 
@@ -721,61 +767,57 @@ class TemplateDelayWindow(ctk.CTkToplevel):
         current_delay = delays_dict.get(filename, 0.0)
         current_type = types_dict.get(filename, "pre")
 
-        type_title = "미매칭 복구 템플릿" if is_fallback else "기본 템플릿"
-        self.title(f"지연 시간 설정 - {filename}")
-        self.geometry("450x430")
+        self.title("⏱️ 템플릿 지연 시간 설정 (Action Delay)")
+        self.geometry("440x370")
         self.resizable(False, False)
 
         self.transient(parent_frame.winfo_toplevel())
         self.grab_set()
 
-        # Header
+        # Header Title
+        target_name = "미매칭 복구 템플릿" if is_fallback else "기본 템플릿"
         self.header_label = ctk.CTkLabel(
             self,
-            text=f"⏱️ 지연 시간 설정 ({type_title})",
-            font=ctk.CTkFont(size=16, weight="bold"),
+            text=f"⏱️ [{target_name}] 동작 지연 시간 설정",
+            font=ctk.CTkFont(size=14, weight="bold"),
         )
-        self.header_label.pack(pady=(15, 5))
+        self.header_label.pack(pady=(15, 2))
 
         self.filename_label = ctk.CTkLabel(
             self,
-            text=f"파일명: {filename}",
-            font=ctk.CTkFont(size=13),
-            text_color="#60A5FA",
+            text=f"대상: {filename}",
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_MUTED,
         )
-        self.filename_label.pack(pady=(0, 15))
+        self.filename_label.pack(pady=(0, 10))
 
-        # Timing Section (적용 시점)
+        # Timing selection (Pre vs Post)
         self.timing_label = ctk.CTkLabel(
             self,
-            text="지연 시간 적용 시점 (Delay Timing):",
+            text="지연 타이밍 (Timing):",
             font=ctk.CTkFont(weight="bold"),
             anchor="w",
         )
-        self.timing_label.pack(fill="x", padx=30, pady=(0, 5))
+        self.timing_label.pack(fill="x", padx=30, pady=(0, 4))
 
+        initial_seg = "동작 후 대기 (Post-delay)" if current_type == "post" else "동작 전 대기 (Pre-delay)"
         self.timing_segmented = ctk.CTkSegmentedButton(
             self,
-            values=["동작 전 대기 (Pre-Action)", "동작 후 대기 (Post-Action)"],
+            values=["동작 전 대기 (Pre-delay)", "동작 후 대기 (Post-delay)"],
             command=self._on_timing_changed,
-            font=ctk.CTkFont(weight="bold"),
         )
-        self.timing_segmented.set(
-            "동작 후 대기 (Post-Action)"
-            if current_type == "post"
-            else "동작 전 대기 (Pre-Action)"
-        )
-        self.timing_segmented.pack(fill="x", padx=30, pady=(0, 6))
+        self.timing_segmented.set(initial_seg)
+        self.timing_segmented.pack(fill="x", padx=30, pady=(0, 8))
 
         # Description box
-        self.desc_frame = ctk.CTkFrame(self, fg_color=("#2B2B2B", "#1C1D1F"), corner_radius=6)
+        self.desc_frame = ctk.CTkFrame(self, fg_color=COLOR_CARD_BG, corner_radius=RADIUS_MD)
         self.desc_frame.pack(fill="x", padx=30, pady=(0, 12))
 
         self.desc_label = ctk.CTkLabel(
             self.desc_frame,
             text="",
             font=ctk.CTkFont(size=11),
-            text_color="#A6ACAF",
+            text_color=COLOR_TEXT_MUTED,
             justify="left",
             wraplength=370,
         )
@@ -805,9 +847,10 @@ class TemplateDelayWindow(ctk.CTkToplevel):
                 self.preset_frame,
                 text=label,
                 width=52,
-                height=24,
-                fg_color="#333333",
-                hover_color="#555555",
+                height=26,
+                fg_color=COLOR_NEUTRAL,
+                hover_color=COLOR_NEUTRAL_HOVER,
+                corner_radius=RADIUS_SM,
                 command=lambda v=val: self._set_preset(v),
             )
             btn.pack(side="left", padx=2, expand=True)
@@ -819,8 +862,10 @@ class TemplateDelayWindow(ctk.CTkToplevel):
         self.save_btn = ctk.CTkButton(
             self.btn_frame,
             text="💾 저장 (Save)",
-            fg_color="#27AE60",
-            hover_color="#1E8449",
+            height=32,
+            fg_color=COLOR_SUCCESS,
+            hover_color=COLOR_SUCCESS_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.save_and_close,
         )
         self.save_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
@@ -828,8 +873,10 @@ class TemplateDelayWindow(ctk.CTkToplevel):
         self.cancel_btn = ctk.CTkButton(
             self.btn_frame,
             text="취소 (Cancel)",
-            fg_color="#4A4A4A",
-            hover_color="#5A5A5A",
+            height=32,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.close_window,
         )
         self.cancel_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
@@ -846,12 +893,12 @@ class TemplateDelayWindow(ctk.CTkToplevel):
         if "동작 후" in choice:
             self.desc_label.configure(
                 text="💡 [동작 후 대기]\n클릭(동작)을 수행한 후, 다음 패턴 인식을 시작하기 전까지 지정된 시간 동안 아무 작업 없이 대기합니다.",
-                text_color="#5DADE2",
+                text_color=COLOR_PRIMARY,
             )
         else:
             self.desc_label.configure(
                 text="💡 [동작 전 대기]\n화면에서 템플릿을 인식한 직후, 클릭(동작)을 실행하기 전에 지정된 시간 동안 대기합니다.",
-                text_color="#F5B041",
+                text_color=COLOR_WARNING,
             )
 
     def save_and_close(self):
@@ -916,7 +963,7 @@ class AddInstanceWindow(ctk.CTkToplevel):
 
         self.checkbox_vars = {} # dev_addr -> BooleanVar
 
-        self.loading_label = ctk.CTkLabel(self.scroll_frame, text="디바이스 검색 중 (ADB scanning)...", text_color="gray")
+        self.loading_label = ctk.CTkLabel(self.scroll_frame, text="디바이스 검색 중 (ADB scanning)...", text_color=COLOR_TEXT_MUTED)
         self.loading_label.pack(pady=20)
 
         # 수동 주소 입력 영역
@@ -936,8 +983,10 @@ class AddInstanceWindow(ctk.CTkToplevel):
         self.add_selected_btn = ctk.CTkButton(
             self.btn_frame,
             text="➕ 선택 항목 탭 추가",
-            fg_color="#2980B9",
-            hover_color="#1F618D",
+            height=34,
+            fg_color=COLOR_PRIMARY,
+            hover_color=COLOR_PRIMARY_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.add_selected
         )
         self.add_selected_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
@@ -945,8 +994,10 @@ class AddInstanceWindow(ctk.CTkToplevel):
         self.add_and_connect_btn = ctk.CTkButton(
             self.btn_frame,
             text="⚡ 전체 추가 & 자동 연결",
-            fg_color="green",
-            hover_color="#006400",
+            height=34,
+            fg_color=COLOR_SUCCESS,
+            hover_color=COLOR_SUCCESS_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.add_and_connect_all
         )
         self.add_and_connect_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
@@ -1052,116 +1103,132 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.settings_window = None
 
         # --- Top Header Bar inside Tab ---
-        self.header_frame = ctk.CTkFrame(self)
+        self.header_frame = ctk.CTkFrame(self, fg_color=COLOR_CARD_BG, corner_radius=RADIUS_MD)
         self.header_frame.pack(fill="x", padx=10, pady=(10, 5))
         self.normal_header_fg = self.header_frame.cget("fg_color")
 
         # Device Address Selector
-        self.device_addr_label = ctk.CTkLabel(self.header_frame, text="Device:", font=ctk.CTkFont(weight="bold"))
-        self.device_addr_label.pack(side="left", padx=(10, 5))
+        self.device_addr_label = ctk.CTkLabel(
+            self.header_frame,
+            text="📱 디바이스:",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.device_addr_label.pack(side="left", padx=(12, 6), pady=8)
 
         initial_devices = [self.clicker.device_address]
         self.device_combo = ctk.CTkComboBox(
             self.header_frame,
             values=initial_devices,
-            width=160,
+            width=165,
+            height=32,
+            corner_radius=RADIUS_MD,
             command=self.on_device_selected
         )
         self.device_combo.set(self.clicker.device_address)
-        self.device_combo.pack(side="left", padx=(0, 5))
+        self.device_combo.pack(side="left", padx=(0, 6), pady=8)
         self.device_combo.bind("<Return>", self.save_settings)
         self.device_combo.bind("<FocusOut>", self.save_settings)
 
         # Connect / Disconnect Button
         self.connect_button = ctk.CTkButton(
             self.header_frame,
-            text="Connect Device",
+            text="🔗 연결 (Connect)",
             width=120,
+            height=32,
+            fg_color=COLOR_PRIMARY,
+            hover_color=COLOR_PRIMARY_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.toggle_connection
         )
-        self.connect_button.pack(side="left", padx=5)
+        self.connect_button.pack(side="left", padx=4, pady=8)
 
         # Start / Stop Clicker Button
         self.start_button = ctk.CTkButton(
             self.header_frame,
-            text="Start Clicker",
+            text="▶ 시작 (Start)",
             width=120,
+            height=32,
             state="disabled",
-            fg_color="green",
-            hover_color="#006400",
+            fg_color=COLOR_SUCCESS,
+            hover_color=COLOR_SUCCESS_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.toggle_clicker
         )
-        self.start_button.pack(side="left", padx=5)
+        self.start_button.pack(side="left", padx=4, pady=8)
 
         # Status Label
         self.status_label = ctk.CTkLabel(
             self.header_frame,
-            text="Status: Disconnected",
-            font=ctk.CTkFont(weight="bold"),
-            text_color="gray"
+            text="상태: 연결 안 됨",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLOR_TEXT_MUTED
         )
-        self.status_label.pack(side="left", padx=15)
+        self.status_label.pack(side="left", padx=12, pady=8)
 
         # Right side buttons in tab header: Settings & Delete Tab
         self.delete_tab_btn = ctk.CTkButton(
             self.header_frame,
-            text="❌ Delete Tab",
+            text="🗑️ 탭 닫기",
             width=90,
-            fg_color="#8B0000",
-            hover_color="#FF0000",
+            height=32,
+            fg_color=COLOR_DANGER,
+            hover_color=COLOR_DANGER_HOVER,
+            corner_radius=RADIUS_MD,
             command=lambda: self.app_owner.remove_instance_tab(self.tab_name)
         )
-        self.delete_tab_btn.pack(side="right", padx=(5, 10))
+        self.delete_tab_btn.pack(side="right", padx=(4, 12), pady=8)
 
         self.settings_button = ctk.CTkButton(
             self.header_frame,
-            text="⚙️ Settings",
-            width=90,
-            fg_color="#4A4A4A",
-            hover_color="#5A5A5A",
+            text="⚙️ 설정",
+            width=85,
+            height=32,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.open_settings_window
         )
-        self.settings_button.pack(side="right", padx=5)
+        self.settings_button.pack(side="right", padx=4, pady=8)
 
         # --- Real-time Status & Timer Info Bar ---
-        self.timer_bar_frame = ctk.CTkFrame(self, fg_color=("#2B2B2B", "#1C1D1F"), corner_radius=6)
+        self.timer_bar_frame = ctk.CTkFrame(self, fg_color=COLOR_CARD_BG, corner_radius=RADIUS_MD)
         self.timer_bar_frame.pack(fill="x", padx=10, pady=(0, 5))
         self.timer_bar_frame.grid_columnconfigure(0, weight=1)
         self.timer_bar_frame.grid_columnconfigure(1, weight=1)
         self.timer_bar_frame.grid_columnconfigure(2, weight=1)
 
         # 1. 미매칭 대기 시간 카드
-        self.card_no_match = ctk.CTkFrame(self.timer_bar_frame, fg_color=("#333333", "#24252A"), corner_radius=5)
+        self.card_no_match = ctk.CTkFrame(self.timer_bar_frame, fg_color=COLOR_CARD_INNER, corner_radius=RADIUS_SM)
         self.card_no_match.grid(row=0, column=0, padx=5, pady=4, sticky="ew")
         self.no_match_timer_label = ctk.CTkLabel(
             self.card_no_match,
             text="⚡ 미매칭 대기: 정지됨",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="gray"
+            text_color=COLOR_TEXT_MUTED
         )
-        self.no_match_timer_label.pack(padx=10, pady=3)
+        self.no_match_timer_label.pack(padx=10, pady=4)
 
         # 2. 매칭없음 경고 시간 카드
-        self.card_timeout = ctk.CTkFrame(self.timer_bar_frame, fg_color=("#333333", "#24252A"), corner_radius=5)
+        self.card_timeout = ctk.CTkFrame(self.timer_bar_frame, fg_color=COLOR_CARD_INNER, corner_radius=RADIUS_SM)
         self.card_timeout.grid(row=0, column=1, padx=5, pady=4, sticky="ew")
         self.timeout_timer_label = ctk.CTkLabel(
             self.card_timeout,
             text="⚠️ 매칭없음 경고: 정지됨",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="gray"
+            text_color=COLOR_TEXT_MUTED
         )
-        self.timeout_timer_label.pack(padx=10, pady=3)
+        self.timeout_timer_label.pack(padx=10, pady=4)
 
         # 3. 최근 매칭 정보 카드
-        self.card_last_match = ctk.CTkFrame(self.timer_bar_frame, fg_color=("#333333", "#24252A"), corner_radius=5)
+        self.card_last_match = ctk.CTkFrame(self.timer_bar_frame, fg_color=COLOR_CARD_INNER, corner_radius=RADIUS_SM)
         self.card_last_match.grid(row=0, column=2, padx=5, pady=4, sticky="ew")
         self.last_match_info_label = ctk.CTkLabel(
             self.card_last_match,
             text="🎯 최근 매칭: 대기 중",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="gray"
+            text_color=COLOR_TEXT_MUTED
         )
-        self.last_match_info_label.pack(padx=10, pady=3)
+        self.last_match_info_label.pack(padx=10, pady=4)
 
         # --- Main Body (Split into Log View and Templates View) ---
         self.body_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -1171,28 +1238,48 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.body_frame.grid_rowconfigure(0, weight=1)
 
         # Left Column: Log Box Frame
-        self.log_frame = ctk.CTkFrame(self.body_frame)
+        self.log_frame = ctk.CTkFrame(self.body_frame, fg_color=COLOR_CARD_BG, corner_radius=RADIUS_MD)
         self.log_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=5)
         self.log_frame.grid_rowconfigure(1, weight=1)
         self.log_frame.grid_columnconfigure(0, weight=1)
 
-        self.log_header_label = ctk.CTkLabel(self.log_frame, text="📜 Activity Log", font=ctk.CTkFont(weight="bold"))
-        self.log_header_label.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
+        self.log_top_header = ctk.CTkFrame(self.log_frame, fg_color="transparent")
+        self.log_top_header.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
 
-        self.log_textbox = ctk.CTkTextbox(self.log_frame, width=350)
+        self.log_header_label = ctk.CTkLabel(
+            self.log_top_header,
+            text="📜 실행 로그 (Activity Log)",
+            font=ctk.CTkFont(size=13, weight="bold")
+        )
+        self.log_header_label.pack(side="left")
+
+        self.clear_log_btn = ctk.CTkButton(
+            self.log_top_header,
+            text="🧹 지우기",
+            width=65,
+            height=24,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_SM,
+            font=ctk.CTkFont(size=11),
+            command=self.clear_log
+        )
+        self.clear_log_btn.pack(side="right")
+
+        self.log_textbox = ctk.CTkTextbox(self.log_frame, width=350, corner_radius=RADIUS_SM)
         self.log_textbox.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
         self.log_textbox.insert("0.0", f"Initialized Tab [{self.tab_name}] for ADB device [{self.clicker.device_address}]\n")
         self.log_textbox.configure(state="disabled")
 
         # Right Column: Active & Fallback Templates Frame
-        self.templates_main_frame = ctk.CTkFrame(self.body_frame)
+        self.templates_main_frame = ctk.CTkFrame(self.body_frame, fg_color="transparent")
         self.templates_main_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=5)
         self.templates_main_frame.grid_rowconfigure(0, weight=1)
         self.templates_main_frame.grid_columnconfigure(0, weight=1)
 
         # Tabview for Primary and Fallback Templates
         self.template_tabview = ctk.CTkTabview(self.templates_main_frame)
-        self.template_tabview.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.template_tabview.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
         
         self.tab_primary = self.template_tabview.add("📋 기본 템플릿")
         self.tab_fallback = self.template_tabview.add("⚡ 미매칭 템플릿")
@@ -1201,25 +1288,33 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.primary_header_frame = ctk.CTkFrame(self.tab_primary, fg_color="transparent")
         self.primary_header_frame.pack(fill="x", padx=5, pady=(5, 5))
 
-        self.primary_header_label = ctk.CTkLabel(self.primary_header_frame, text="Primary Templates", font=ctk.CTkFont(weight="bold"))
+        self.primary_header_label = ctk.CTkLabel(
+            self.primary_header_frame,
+            text="📋 기본 템플릿 목록",
+            font=ctk.CTkFont(size=13, weight="bold")
+        )
         self.primary_header_label.pack(side="left")
 
         self.reset_counts_button = ctk.CTkButton(
             self.primary_header_frame,
-            text="Reset Counts",
-            width=100,
-            height=26,
-            fg_color="#D9534F",
-            hover_color="#C9302C",
+            text="🔄 카운트 초기화",
+            width=110,
+            height=28,
+            fg_color=COLOR_DANGER,
+            hover_color=COLOR_DANGER_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.reset_counts_event
         )
         self.reset_counts_button.pack(side="right", padx=(5, 0))
 
         self.crop_button = ctk.CTkButton(
             self.primary_header_frame,
-            text="+ Create Template",
-            width=125,
-            height=26,
+            text="➕ 템플릿 등록",
+            width=115,
+            height=28,
+            fg_color=COLOR_SUCCESS,
+            hover_color=COLOR_SUCCESS_HOVER,
+            corner_radius=RADIUS_MD,
             command=lambda: self.start_cropping(is_fallback=False),
             state="disabled"
         )
@@ -1232,35 +1327,41 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.fallback_header_frame = ctk.CTkFrame(self.tab_fallback, fg_color="transparent")
         self.fallback_header_frame.pack(fill="x", padx=5, pady=(5, 5))
 
-        self.fallback_header_label = ctk.CTkLabel(self.fallback_header_frame, text="No-Match Fallback Templates", font=ctk.CTkFont(weight="bold"))
+        self.fallback_header_label = ctk.CTkLabel(
+            self.fallback_header_frame,
+            text="⚡ 미매칭 복구 템플릿",
+            font=ctk.CTkFont(size=13, weight="bold")
+        )
         self.fallback_header_label.pack(side="left")
 
         self.fallback_timer_sublabel = ctk.CTkLabel(
             self.fallback_header_frame,
-            text="⚡ 대기: --",
+            text="대기: --",
             font=ctk.CTkFont(size=12),
-            text_color="#5DADE2"
+            text_color=COLOR_PRIMARY
         )
         self.fallback_timer_sublabel.pack(side="left", padx=(10, 0))
 
         self.reset_fb_counts_button = ctk.CTkButton(
             self.fallback_header_frame,
-            text="Reset Counts",
-            width=100,
-            height=26,
-            fg_color="#D9534F",
-            hover_color="#C9302C",
+            text="🔄 카운트 초기화",
+            width=110,
+            height=28,
+            fg_color=COLOR_DANGER,
+            hover_color=COLOR_DANGER_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.reset_fallback_counts_event
         )
         self.reset_fb_counts_button.pack(side="right", padx=(5, 0))
 
         self.crop_fb_button = ctk.CTkButton(
             self.fallback_header_frame,
-            text="+ Create Fallback",
-            width=125,
-            height=26,
-            fg_color="#3498DB",
-            hover_color="#2980B9",
+            text="➕ 복구 템플릿 등록",
+            width=135,
+            height=28,
+            fg_color=COLOR_PRIMARY,
+            hover_color=COLOR_PRIMARY_HOVER,
+            corner_radius=RADIUS_MD,
             command=lambda: self.start_cropping(is_fallback=True),
             state="disabled"
         )
@@ -1270,15 +1371,15 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.fallback_templates_frame.pack(fill="both", expand=True, padx=5, pady=(0, 5))
 
         # --- Fallback Final Action Control (Bottom Panel) ---
-        self.fallback_final_frame = ctk.CTkFrame(self.tab_fallback, fg_color=("#2B2B2B", "#1E1E22"), corner_radius=6)
+        self.fallback_final_frame = ctk.CTkFrame(self.tab_fallback, fg_color=COLOR_CARD_BG, corner_radius=RADIUS_MD)
         self.fallback_final_frame.pack(fill="x", padx=5, pady=(0, 5))
 
         self.fb_final_title = ctk.CTkLabel(
             self.fallback_final_frame,
-            text="📌 모든 템플릿 불일치 시 최종 동작:",
+            text="📌 최종 탈출 동작:",
             font=ctk.CTkFont(size=12, weight="bold")
         )
-        self.fb_final_title.pack(side="left", padx=(10, 8), pady=6)
+        self.fb_final_title.pack(side="left", padx=(10, 8), pady=8)
 
         curr_fb_action = getattr(self.clicker, 'fallback_final_action', 'none')
         curr_fb_label = NO_MATCH_ACTION_MAP.get(curr_fb_action, "사용 안 함 (Disabled)")
@@ -1292,20 +1393,22 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.fb_final_combo = ctk.CTkOptionMenu(
             self.fallback_final_frame,
             values=final_action_options,
-            width=180,
+            width=190,
+            height=28,
+            corner_radius=RADIUS_SM,
             command=self.on_fallback_final_action_changed
         )
         self.fb_final_combo.set(curr_fb_label)
-        self.fb_final_combo.pack(side="left", padx=(0, 6), pady=6)
+        self.fb_final_combo.pack(side="left", padx=(0, 6), pady=8)
 
         # Coordinate inputs
         self.fb_final_coord_frame = ctk.CTkFrame(self.fallback_final_frame, fg_color="transparent")
-        self.fb_final_coord_frame.pack(side="left", padx=(0, 5), pady=6)
+        self.fb_final_coord_frame.pack(side="left", padx=(0, 5), pady=8)
 
         coords = getattr(self.clicker, 'fallback_final_coords', [500, 500])
         self.fb_final_x_label = ctk.CTkLabel(self.fb_final_coord_frame, text="X:")
         self.fb_final_x_label.pack(side="left", padx=(0, 2))
-        self.fb_final_x_entry = ctk.CTkEntry(self.fb_final_coord_frame, width=50)
+        self.fb_final_x_entry = ctk.CTkEntry(self.fb_final_coord_frame, width=50, height=28, corner_radius=RADIUS_SM)
         self.fb_final_x_entry.insert(0, str(coords[0]))
         self.fb_final_x_entry.pack(side="left", padx=(0, 6))
         self.fb_final_x_entry.bind("<KeyRelease>", self.save_fallback_final_settings)
@@ -1313,7 +1416,7 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         self.fb_final_y_label = ctk.CTkLabel(self.fb_final_coord_frame, text="Y:")
         self.fb_final_y_label.pack(side="left", padx=(0, 2))
-        self.fb_final_y_entry = ctk.CTkEntry(self.fb_final_coord_frame, width=50)
+        self.fb_final_y_entry = ctk.CTkEntry(self.fb_final_coord_frame, width=50, height=28, corner_radius=RADIUS_SM)
         self.fb_final_y_entry.insert(0, str(coords[1]))
         self.fb_final_y_entry.pack(side="left", padx=(0, 6))
         self.fb_final_y_entry.bind("<KeyRelease>", self.save_fallback_final_settings)
@@ -1323,6 +1426,10 @@ class InstanceTabFrame(ctk.CTkFrame):
             self.fb_final_coord_frame,
             text="🎯 좌표 선택",
             width=90,
+            height=28,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_SM,
             command=self.pick_fallback_final_coords
         )
         self.fb_final_pick_btn.pack(side="left", padx=2)
@@ -1334,27 +1441,41 @@ class InstanceTabFrame(ctk.CTkFrame):
             self.fallback_final_frame,
             text="⚡ 즉시 실행",
             width=90,
-            fg_color="#D35400",
-            hover_color="#A04000",
+            height=28,
+            fg_color=COLOR_WARNING,
+            hover_color=COLOR_WARNING_HOVER,
+            corner_radius=RADIUS_SM,
             command=self.test_fallback_final_action
         )
-        self.fb_final_test_btn.pack(side="right", padx=(5, 10), pady=6)
+        self.fb_final_test_btn.pack(side="right", padx=(5, 10), pady=8)
 
         self.refresh_templates()
+
+    def clear_log(self):
+        try:
+            self.log_textbox.configure(state="normal")
+            self.log_textbox.delete("1.0", "end")
+            self._log_line_count = 1
+            self.log_textbox.configure(state="disabled")
+        except Exception:
+            pass
 
     def update_device_combo_values(self, device_list):
         if not self._destroyed:
             self.device_combo.configure(values=device_list)
 
     def _set_disconnected_ui(self):
-        self.status_label.configure(text="Status: Disconnected", text_color="gray")
+        self.status_label.configure(text="상태: 연결 안 됨", text_color=COLOR_TEXT_MUTED)
         self.start_button.configure(
-            state="disabled", text="Start Clicker",
-            fg_color="green", hover_color="#006400"
+            state="disabled", text="▶ 시작 (Start)",
+            fg_color=COLOR_SUCCESS, hover_color=COLOR_SUCCESS_HOVER
         )
         self.crop_button.configure(state="disabled")
         self.crop_fb_button.configure(state="disabled")
-        self.connect_button.configure(state="normal", text="Connect Device")
+        self.connect_button.configure(
+            state="normal", text="🔗 연결 (Connect)",
+            fg_color=COLOR_PRIMARY, hover_color=COLOR_PRIMARY_HOVER
+        )
 
     def on_device_selected(self, choice):
         if choice:
@@ -1879,9 +2000,12 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         # 1. 우측 고정 버튼 영역 (플랫 구조로 레이아웃 부하 최소화)
         del_cmd = (lambda f=filename: self.delete_fallback_template_event(f)) if is_fallback else (lambda f=filename: self.delete_template_event(f))
-        del_btn = ctk.CTkButton(row_frame, text="X", width=28, height=25, 
-                              fg_color="#8B0000", hover_color="#FF0000",
-                              command=del_cmd)
+        del_btn = ctk.CTkButton(
+            row_frame, text="✕", width=26, height=26, 
+            fg_color=COLOR_DANGER, hover_color=COLOR_DANGER_HOVER,
+            corner_radius=RADIUS_SM, font=ctk.CTkFont(size=11, weight="bold"),
+            command=del_cmd
+        )
         del_btn.pack(side="right", padx=(3, 0))
 
         action_dict = self.clicker.fallback_template_actions if is_fallback else self.clicker.template_actions
@@ -1889,9 +2013,12 @@ class InstanceTabFrame(ctk.CTkFrame):
         action_text, action_fg, action_hover = get_action_button_style(action)
         
         toggle_cmd = (lambda f=filename: self.toggle_fallback_action_event(f)) if is_fallback else (lambda f=filename: self.toggle_action_event(f))
-        action_btn = ctk.CTkButton(row_frame, text=action_text, width=115, height=25,
-                                   fg_color=action_fg, hover_color=action_hover,
-                                   command=toggle_cmd)
+        action_btn = ctk.CTkButton(
+            row_frame, text=action_text, width=120, height=26,
+            fg_color=action_fg, hover_color=action_hover,
+            corner_radius=RADIUS_SM, font=ctk.CTkFont(size=11, weight="bold"),
+            command=toggle_cmd
+        )
         action_btn.pack(side="right", padx=(3, 0))
 
         delays_dict = self.clicker.fallback_template_delays if is_fallback else self.clicker.template_delays
@@ -1901,21 +2028,33 @@ class InstanceTabFrame(ctk.CTkFrame):
         delay_text, delay_fg, delay_hover = get_delay_button_style(delay, delay_type)
 
         delay_cmd = (lambda f=filename: self.set_fallback_template_delay_event(f)) if is_fallback else (lambda f=filename: self.set_template_delay_event(f))
-        delay_btn = ctk.CTkButton(row_frame, text=delay_text, width=62, height=25,
-                                  fg_color=delay_fg, hover_color=delay_hover,
-                                  command=delay_cmd)
+        delay_btn = ctk.CTkButton(
+            row_frame, text=delay_text, width=66, height=26,
+            fg_color=delay_fg, hover_color=delay_hover,
+            corner_radius=RADIUS_SM, font=ctk.CTkFont(size=11),
+            command=delay_cmd
+        )
         delay_btn.pack(side="right", padx=(3, 0))
 
         counts_dict = self.clicker.fallback_template_counts if is_fallback else self.clicker.template_counts
         count = counts_dict.get(filename, 0)
-        count_label = ctk.CTkLabel(row_frame, text=f"Clicks: {count}", width=68, text_color="gray", anchor="e", font=ctk.CTkFont(size=11))
+        count_label = ctk.CTkLabel(
+            row_frame, text=f"{count}회", width=48,
+            text_color=COLOR_TEXT_MUTED, anchor="e", font=ctk.CTkFont(size=11)
+        )
         count_label.pack(side="right", padx=(2, 6))
 
         # 2. 좌측 컨트롤 영역
-        drag_handle = ctk.CTkLabel(row_frame, text="☰", width=22, cursor="fleur", font=ctk.CTkFont(size=13, weight="bold"), text_color="gray")
+        drag_handle = ctk.CTkLabel(
+            row_frame, text="☰", width=20, cursor="fleur",
+            font=ctk.CTkFont(size=13, weight="bold"), text_color=COLOR_TEXT_MUTED
+        )
         drag_handle.pack(side="left", padx=(3, 0))
 
-        priority_label = ctk.CTkLabel(row_frame, text=f"{index+1}.", width=28, anchor="w", font=ctk.CTkFont(size=12))
+        priority_label = ctk.CTkLabel(
+            row_frame, text=f"{index+1}.", width=26, anchor="w",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_MUTED
+        )
         priority_label.pack(side="left", padx=(2, 4))
 
         # 3. 중앙 가변 텍스트 라벨
@@ -1925,7 +2064,10 @@ class InstanceTabFrame(ctk.CTkFrame):
             off_x, off_y = offset_dict[filename]
             offset_info = f"  ({off_x:+d},{off_y:+d})"
         
-        label = ctk.CTkLabel(row_frame, text=f"{filename}{offset_info}", anchor="w", font=ctk.CTkFont(size=12))
+        label = ctk.CTkLabel(
+            row_frame, text=f"{filename}{offset_info}", anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=COLOR_TEXT_PRIMARY
+        )
         label.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
         target_dir = self.clicker.fallback_template_dir if is_fallback else self.clicker.template_dir
@@ -2626,62 +2768,70 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # --- Top Global Control Toolbar ---
-        self.top_bar = ctk.CTkFrame(self, height=50)
+        self.top_bar = ctk.CTkFrame(self, fg_color=COLOR_CARD_BG, corner_radius=RADIUS_MD, height=52)
         self.top_bar.pack(fill="x", padx=10, pady=(10, 5))
 
         self.logo_label = ctk.CTkLabel(
             self.top_bar, 
             text="⚡ Terabox Clicker Multi", 
-            font=ctk.CTkFont(size=18, weight="bold")
+            font=ctk.CTkFont(size=17, weight="bold")
         )
-        self.logo_label.pack(side="left", padx=(15, 15))
+        self.logo_label.pack(side="left", padx=(16, 16), pady=8)
 
         # Top Bar Control Buttons (Unified style & font)
-        btn_font = ctk.CTkFont(size=13, weight="bold")
+        btn_font = ctk.CTkFont(size=12, weight="bold")
 
         self.connect_all_btn = ctk.CTkButton(
             self.top_bar,
             text="🔗  전체 연결",
             font=btn_font,
-            width=115,
-            fg_color="#27AE60",
-            hover_color="#1E8449",
+            width=110,
+            height=34,
+            fg_color=COLOR_PRIMARY,
+            hover_color=COLOR_PRIMARY_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.connect_all_instances
         )
-        self.connect_all_btn.pack(side="left", padx=4)
+        self.connect_all_btn.pack(side="left", padx=4, pady=8)
 
         self.start_all_btn = ctk.CTkButton(
             self.top_bar,
             text="▶  전체 시작",
             font=btn_font,
-            width=115,
-            fg_color="#2EA043",
-            hover_color="#238636",
+            width=110,
+            height=34,
+            fg_color=COLOR_SUCCESS,
+            hover_color=COLOR_SUCCESS_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.start_all_clickers
         )
-        self.start_all_btn.pack(side="left", padx=4)
+        self.start_all_btn.pack(side="left", padx=4, pady=8)
 
         self.stop_all_btn = ctk.CTkButton(
             self.top_bar,
             text="⏹  전체 중지",
             font=btn_font,
-            width=115,
-            fg_color="#DA3633",
-            hover_color="#B62324",
+            width=110,
+            height=34,
+            fg_color=COLOR_DANGER,
+            hover_color=COLOR_DANGER_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.stop_all_clickers
         )
-        self.stop_all_btn.pack(side="left", padx=4)
+        self.stop_all_btn.pack(side="left", padx=4, pady=8)
 
         self.add_tab_btn = ctk.CTkButton(
             self.top_bar,
-            text="➕  인스턴스 탭 추가",
+            text="➕  인스턴스 추가",
             font=btn_font,
-            width=145,
-            fg_color="#1F6FE5",
-            hover_color="#1859B8",
+            width=130,
+            height=34,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_MD,
             command=self.add_new_instance_dialog
         )
-        self.add_tab_btn.pack(side="left", padx=4)
+        self.add_tab_btn.pack(side="left", padx=4, pady=8)
 
 
         # --- Main Workspace: Tab View ---
