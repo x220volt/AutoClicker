@@ -938,7 +938,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertIsNotNone(result)
         command = run.call_args.args[0]
         self.assertEqual(
-            command[1:5], ["-H", clicker.host, "-P", str(clicker.port)]
+            command[1:3], ["-P", str(clicker.port)]
         )
         self.assertEqual(command[command.index("-s") + 1], "emulator-5554")
         device.create_connection.assert_called_once_with(timeout=ADB_COMMAND_TIMEOUT)
@@ -1716,6 +1716,39 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[1:5], ["-H", "10.0.0.20", "-P", "5040"])
         self.assertEqual(command[command.index("-s") + 1], "emulator-5554")
+
+    def test_local_adb_endpoint_omits_host_flag_for_start_server(self):
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="127.0.0.1:5555",
+            host="127.0.0.1",
+            port=5037,
+            logger=lambda _: None,
+        )
+        text_proc = subprocess.CompletedProcess([], 0, "", "")
+        with patch("main.subprocess.run", return_value=text_proc) as run:
+            clicker._run_adb(["start-server"])
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                clicker.adb_path,
+                "-P",
+                "5037",
+                "start-server",
+            ],
+        )
+
+        with patch("main.subprocess.run", return_value=text_proc) as run:
+            clicker._run_adb(["devices"])
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                clicker.adb_path,
+                "-P",
+                "5037",
+                "devices",
+            ],
+        )
 
     def test_run_once_uses_fresh_time_after_template_scan(self):
         clicker = TeraboxClicker(

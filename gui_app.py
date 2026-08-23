@@ -7,9 +7,17 @@ import time
 import cv2
 import numpy as np
 import queue
+
+try:
+    cv2.setNumThreads(1)
+    if hasattr(cv2, "ocl"):
+        cv2.ocl.setUseOpenCL(False)
+except Exception:
+    pass
+
 from main import TeraboxClicker, CONFIG_PATH, ADB_COMMAND_TIMEOUT
 
-VERSION = "v0.3.6"
+VERSION = "v0.3.7"
 
 # 앱 전역 테마를 Dark 모드로 고정
 ctk.set_appearance_mode("Dark")
@@ -2731,6 +2739,8 @@ class App(ctk.CTk):
             else:
                 frame.clicker.template_order = list(order)
                 row_dict = frame.template_row_widgets
+            for w in row_dict.values():
+                w.frame.pack_forget()
             for idx, filename in enumerate(order):
                 if filename in row_dict:
                     w = row_dict[filename]

@@ -2,7 +2,7 @@
     "device_address": "emulator-5554",
     "scan_interval": 1,
     "no_match_timeout": 150,
-    "similarity_threshold": 0.8,
+    "similarity_threshold": 0.9,
     "enable_random_click": false,
     "random_click_interval": 30,
     "template_order": [
@@ -12,11 +12,12 @@
         "vxcvxcvsre.png",
         "667657.png",
         "9987.png",
-        "xr555fghf.png",
+        "box.png",
         "12312421423.png",
         "141425345.png",
         "90-90-9.png",
         "dfdg.png",
+        "xr555fghf.png",
         "mn,,n,.png",
         "454rete.png",
         "66767.png",
@@ -24,28 +25,45 @@
         "p==.png",
         "dsf.png",
         "..'[[.png",
-        "vbnb.png"
+        "vbnb.png",
+        "cbgv.png",
+        "ngfghfj.png",
+        "vcxvx.png",
+        "ccxvxcv.png",
+        "dfgdg.png",
+        "gjghjg.png",
+        "dfgdf.png",
+        "78o7.png"
     ],
     "template_counts": {
-        "sdfsf.png": 8,
-        "1.png": 10,
-        "xcvvx.png": 1,
-        "vxcvxcvsre.png": 0,
-        "667657.png": 7,
+        "sdfsf.png": 20,
+        "1.png": 11,
+        "xcvvx.png": 0,
+        "vxcvxcvsre.png": 2,
+        "667657.png": 13,
         "9987.png": 0,
-        "xr555fghf.png": 0,
+        "box.png": 0,
         "12312421423.png": 0,
         "141425345.png": 0,
-        "90-90-9.png": 1,
+        "90-90-9.png": 0,
         "dfdg.png": 0,
+        "xr555fghf.png": 1,
         "mn,,n,.png": 0,
         "454rete.png": 0,
         "66767.png": 0,
         "sfsdf44.png": 0,
-        "p==.png": 1,
+        "p==.png": 0,
         "dsf.png": 0,
-        "..'[[.png": 1,
-        "vbnb.png": 4
+        "..'[[.png": 0,
+        "vbnb.png": 10,
+        "cbgv.png": 9,
+        "ngfghfj.png": 1,
+        "vcxvx.png": 6,
+        "ccxvxcv.png": 1,
+        "dfgdg.png": 0,
+        "gjghjg.png": 9,
+        "dfgdf.png": 3,
+        "78o7.png": 1
     },
     "template_actions": {
         "sdfsf.png": "click",
@@ -54,11 +72,12 @@
         "vxcvxcvsre.png": "click",
         "667657.png": "click",
         "9987.png": "click",
-        "xr555fghf.png": "double_click",
+        "box.png": "click",
         "12312421423.png": "double_click",
         "141425345.png": "double_click",
         "90-90-9.png": "back",
         "dfdg.png": "click",
+        "xr555fghf.png": "double_click",
         "mn,,n,.png": "double_click",
         "454rete.png": "double_click",
         "66767.png": "click",
@@ -66,113 +85,32 @@
         "p==.png": "click",
         "dsf.png": "double_click",
         "..'[[.png": "back",
-        "vbnb.png": "click"
+        "vbnb.png": "click",
+        "cbgv.png": "back",
+        "ngfghfj.png": "click",
+        "vcxvx.png": "click",
+        "ccxvxcv.png": "click",
+        "dfgdg.png": "click",
+        "gjghjg.png": "click",
+        "dfgdf.png": "double_click",
+        "78o7.png": "click"
     },
     "instances": [
         {
-            "device_address": "emulator-5554",
-            "scan_interval": 1,
-            "no_match_timeout": 150,
-            "similarity_threshold": 0.8,
-            "match_grayscale": true,
-            "enable_random_click": false,
-            "random_click_interval": 30,
-            "no_match_action": "none",
-            "no_match_interval": 30,
-            "no_match_coords": [
-                500,
-                500
-            ],
-            "fallback_final_action": "none",
-            "fallback_final_coords": [
-                500,
-                500
-            ],
-            "double_click_interval": 1,
-            "post_action_delay": 2,
-            "local_verify": true,
-            "local_verify_margin": 12,
-            "local_verify_top_k": 3,
-            "dynamic_roi": true,
-            "roi_fullscreen_fallback": true,
-            "frame_change_detection": true,
-            "force_scan_interval": 5,
-            "adaptive_scan_interval": true,
-            "max_idle_interval": 5,
-            "adaptive_template_order": false,
-            "capture_backend": "auto",
-            "performance_metrics": false
+            "device_address": "emulator-5554"
         },
         {
-            "device_address": "emulator-5556",
-            "scan_interval": 1,
-            "no_match_timeout": 150,
-            "similarity_threshold": 0.8,
-            "match_grayscale": true,
-            "enable_random_click": false,
-            "random_click_interval": 30,
-            "no_match_action": "fallback_list",
-            "no_match_interval": 30,
-            "no_match_coords": [
-                500,
-                500
-            ],
-            "fallback_final_action": "none",
-            "fallback_final_coords": [
-                500,
-                500
-            ],
-            "double_click_interval": 1,
-            "post_action_delay": 2,
-            "local_verify": true,
-            "local_verify_margin": 12,
-            "local_verify_top_k": 3,
-            "dynamic_roi": true,
-            "roi_fullscreen_fallback": true,
-            "frame_change_detection": true,
-            "force_scan_interval": 5,
-            "adaptive_scan_interval": true,
-            "max_idle_interval": 5,
-            "adaptive_template_order": false,
-            "capture_backend": "auto",
-            "performance_metrics": false
+            "device_address": "emulator-5556"
         },
         {
-            "device_address": "emulator-5558",
-            "scan_interval": 1,
-            "no_match_timeout": 150,
-            "similarity_threshold": 0.9,
-            "match_grayscale": true,
-            "enable_random_click": false,
-            "random_click_interval": 30,
-            "no_match_action": "fallback_list",
-            "no_match_interval": 30,
-            "no_match_coords": [
-                500,
-                500
-            ],
-            "fallback_final_action": "none",
-            "fallback_final_coords": [
-                500,
-                500
-            ],
-            "double_click_interval": 1,
-            "post_action_delay": 2,
-            "local_verify": true,
-            "local_verify_margin": 12,
-            "local_verify_top_k": 3,
-            "dynamic_roi": true,
-            "roi_fullscreen_fallback": true,
-            "frame_change_detection": true,
-            "force_scan_interval": 5,
-            "adaptive_scan_interval": true,
-            "max_idle_interval": 5,
-            "adaptive_template_order": false,
-            "capture_backend": "auto",
-            "performance_metrics": false
+            "device_address": "emulator-5558"
         }
     ],
     "template_offsets": {
+        "box.png": [
+            59,
+            64
+        ],
         "12312421423.png": [
             -932,
             -860
@@ -220,9 +158,41 @@
         "vbnb.png": [
             42,
             43
+        ],
+        "cbgv.png": [
+            50,
+            43
+        ],
+        "ngfghfj.png": [
+            48,
+            44
+        ],
+        "vcxvx.png": [
+            31,
+            28
+        ],
+        "ccxvxcv.png": [
+            41,
+            37
+        ],
+        "dfgdg.png": [
+            726,
+            -1724
+        ],
+        "gjghjg.png": [
+            29,
+            27
+        ],
+        "dfgdf.png": [
+            6,
+            -42
+        ],
+        "78o7.png": [
+            31,
+            28
         ]
     },
-    "no_match_action": "none",
+    "no_match_action": "fallback_list",
     "no_match_interval": 30,
     "no_match_coords": [
         500,
@@ -308,10 +278,10 @@
     },
     "match_grayscale": true,
     "double_click_interval": 1,
-    "fallback_final_action": "none",
+    "fallback_final_action": "custom_double_click",
     "fallback_final_coords": [
-        500,
-        500
+        42,
+        38
     ],
     "post_action_delay": 2,
     "local_verify": true,
@@ -325,5 +295,70 @@
     "max_idle_interval": 5,
     "adaptive_template_order": false,
     "capture_backend": "auto",
-    "performance_metrics": false
+    "performance_metrics": false,
+    "consecutive_match_threshold": 20,
+    "template_delays": {
+        "dfgdg.png": 52,
+        "dfgdf.png": 5
+    },
+    "template_delay_types": {},
+    "fallback_template_delays": {},
+    "fallback_template_delay_types": {},
+    "template_rois": {
+        "box.png": [
+            0.7759259259259259,
+            0.6864583333333333,
+            1.0,
+            0.8864583333333333
+        ],
+        "cbgv.png": [
+            0.8927083333333333,
+            0.0,
+            1.0,
+            0.21666666666666667
+        ],
+        "ngfghfj.png": [
+            0.0,
+            0.0,
+            0.13125,
+            0.14629629629629629
+        ],
+        "vcxvx.png": [
+            0.9229166666666667,
+            0.011111111111111112,
+            1.0,
+            0.16666666666666666
+        ],
+        "ccxvxcv.png": [
+            0.8425925925925926,
+            0.0,
+            1.0,
+            0.0875
+        ],
+        "dfgdg.png": [
+            0.0,
+            0.865625,
+            1.0,
+            1.0
+        ],
+        "gjghjg.png": [
+            0.8740740740740741,
+            0.0,
+            1.0,
+            0.071875
+        ],
+        "dfgdf.png": [
+            0.0,
+            0.0,
+            0.3229166666666667,
+            0.32592592592592595
+        ],
+        "78o7.png": [
+            0.0,
+            0.0,
+            0.07395833333333333,
+            0.11296296296296296
+        ]
+    },
+    "fallback_template_rois": {}
 }

@@ -1,5 +1,16 @@
 import cv2
 import numpy as np
+
+# Multi-instance CPU/threading optimization: limit OpenCV internal worker threads
+# to 1 to prevent thread explosion (e.g. 5 instances * 12 threads = 60 threads)
+# and disable OpenCL context conflicts across background threads.
+try:
+    cv2.setNumThreads(1)
+    if hasattr(cv2, "ocl"):
+        cv2.ocl.setUseOpenCL(False)
+except Exception:
+    pass
+
 from ppadb.client import Client as AdbClient
 from ppadb.device import Device as AdbDevice
 from collections import Counter, defaultdict, deque
@@ -64,9 +75,9 @@ def get_default_adb_path(base_dir=None):
 ADB_HOST = "127.0.0.1"
 ADB_PORT = 5037
 DEVICE_ADDRESS = "127.0.0.1:5555"
-DEFAULT_SCAN_INTERVAL = 2
+DEFAULT_SCAN_INTERVAL = 1
 DEFAULT_NO_MATCH_TIMEOUT = 120
-DEFAULT_SIMILARITY_THRESHOLD = 0.8
+DEFAULT_SIMILARITY_THRESHOLD = 0.9
 DEFAULT_MATCH_GRAYSCALE = True
 DEFAULT_ENABLE_RANDOM_CLICK = False
 DEFAULT_RANDOM_CLICK_INTERVAL = 30
@@ -2046,11 +2057,23 @@ class TeraboxClicker:
         return {}
 
     def _run_adb(self, args, timeout=ADB_COMMAND_TIMEOUT, check=False, text=True):
+        cmd = [self.adb_path]
+        if (
+            "start-server" not in args
+            and self.host
+            and str(self.host).strip() not in ("127.0.0.1", "localhost")
+        ):
+            cmd.extend(["-H", str(self.host)])
+        if self.port:
+            cmd.extend(["-P", str(self.port)])
+        cmd.extend(args)
         return subprocess.run(
-            [self.adb_path, "-H", str(self.host), "-P", str(self.port), *args],
+            cmd,
             check=check,
             capture_output=True,
             text=text,
+            encoding="utf-8" if text else None,
+            errors="replace" if text else None,
             timeout=timeout,
             **self._subprocess_kwargs(),
         )
@@ -2287,17 +2310,12 @@ class TeraboxClicker:
         )
 
     def _capture_exec_backend(self, serial, backend, use_grayscale):
-        command = [
-            self.adb_path,
-            "-H",
-            str(self.host),
-            "-P",
-            str(self.port),
-            "-s",
-            serial,
-            "exec-out",
-            "screencap",
-        ]
+        command = [self.adb_path]
+        if self.host and str(self.host).strip() not in ("127.0.0.1", "localhost"):
+            command.extend(["-H", str(self.host)])
+        if self.port:
+            command.extend(["-P", str(self.port)])
+        command.extend(["-s", serial, "exec-out", "screencap"])
         if backend == "png":
             command.append("-p")
         started_at = time.perf_counter()
