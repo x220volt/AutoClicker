@@ -2276,28 +2276,45 @@ class TeraboxClicker:
         return list(dict.fromkeys(final_devices))
 
     def get_connected_devices(self):
-        """Return online ADB serials after bounded, parallel emulator probing."""
+        """Return online ADB serials after fast, socket-probed parallel emulator connection."""
         try:
             self._run_adb(["start-server"], check=True)
         except (OSError, subprocess.SubprocessError) as error:
             self.log(f"ADB 서버 시작 실패: {error}")
             return []
 
+        # Comprehensive emulator ports (LDPlayer, BlueStacks, Nox, MuMu, MEmu, etc.)
         emulator_ports = (
-            5555, 5557, 5559, 5561, 5563, 5565,
-            5575, 5585, 62001, 62025, 7555,
+            5555, 5557, 5559, 5561, 5563, 5565, 5567, 5569, 5571, 5573, 5575, 5577, 5579, 5581, 5583, 5585,
+            5595, 5605, 5615, 5625, 5635, 5645, 5655,
+            62001, 62025, 62026, 62027, 62028, 62029, 62030, 62031, 62032,
+            7555, 16384, 16416, 16448, 16480, 16512,
+            21503, 21513, 21523, 21533,
         )
 
+        def is_port_open(port):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                    return True
+            except (OSError, socket.error):
+                return False
+
+        # 1. Fast parallel TCP socket probe (< 20ms)
+        with ThreadPoolExecutor(max_workers=min(32, len(emulator_ports))) as executor:
+            port_status = list(executor.map(lambda p: (p, is_port_open(p)), emulator_ports))
+
+        open_ports = [p for p, is_open in port_status if is_open]
+
+        # 2. Connect only to active listening ports
         def connect_port(port):
             try:
-                self._run_adb(
-                    ["connect", f"127.0.0.1:{port}"], timeout=1.0
-                )
+                self._run_adb(["connect", f"127.0.0.1:{port}"], timeout=1.0)
             except (OSError, subprocess.SubprocessError):
                 pass
 
-        with ThreadPoolExecutor(max_workers=len(emulator_ports)) as executor:
-            list(executor.map(connect_port, emulator_ports))
+        if open_ports:
+            with ThreadPoolExecutor(max_workers=min(16, len(open_ports))) as executor:
+                list(executor.map(connect_port, open_ports))
 
         try:
             result = self._run_adb(["devices"], check=True)
@@ -2306,13 +2323,14 @@ class TeraboxClicker:
             return []
 
         devices = []
-        for line in result.stdout.splitlines()[1:]:
-            parts = line.strip().split()
+        for line in result.stdout.splitlines():
+            line_str = line.strip()
+            if not line_str or line_str.startswith("*") or line_str.startswith("List of devices"):
+                continue
+            parts = line_str.split()
             if len(parts) >= 2 and parts[1] == "device":
                 devices.append(parts[0])
-            elif len(parts) >= 1 and parts[0].endswith(":5555") and "device" in parts:
-                devices.append(parts[0])
-            elif len(parts) >= 1 and parts[0].startswith("127.0.0.1:") and "device" in parts:
+            elif len(parts) >= 1 and "device" in parts[1:]:
                 devices.append(parts[0])
         return self.normalize_device_serials(devices)
 
@@ -2336,8 +2354,10 @@ class TeraboxClicker:
                     return False
                 online_serials = {
                     parts[0]
-                    for line in result.stdout.splitlines()[1:]
-                    for parts in (line.strip().split(),)
+                    for line in result.stdout.splitlines()
+                    for line_str in (line.strip(),)
+                    if line_str and not line_str.startswith("*") and not line_str.startswith("List of devices")
+                    for parts in (line_str.split(),)
                     if len(parts) >= 2 and parts[1] == "device"
                 }
                 target_serial = (

@@ -227,3 +227,22 @@ pyinstaller TeraboxClicker.spec --noconfirm
 
 **Q5. 미매칭 템플릿으로도 해결되지 않는 팝업이나 화면 멈춤은 어떻게 하나요?**  
 - `⚡ 미매칭 템플릿` 탭 하단의 **`📌 모든 템플릿 불일치 시 최종 동작`**에서 `뒤로가기` 또는 닫기 버튼 `특정 좌표 클릭`을 설정해 두시면 복구 템플릿이 모두 불일치하더라도 자동으로 해당 동작을 수행합니다.
+
+---
+
+## 📜 10. 오픈소스 라이선스 고지 (Open Source Licenses & Legal Notice)
+
+본 프로젝트는 오픈소스 소프트웨어를 포함하거나 활용하고 있으며, 관련 라이선스 요구사항을 성실히 준수합니다.
+
+### 1) Android Debug Bridge (ADB)
+* **저작권**: Copyright (C) 2006-2024 The Android Open Source Project (AOSP)
+* **라이선스**: **Apache License, Version 2.0**
+* 프로그램 배포 패키지 내 `LICENSE-adb.txt` 및 `ADB/NOTICE.txt`에 Apache 2.0 전문과 원본 저작권 고지문이 포함되어 있습니다.
+* **면책 고지**: Apache 2.0 라이선스 조건에 따라 본 소프트웨어에 포함된 ADB 바이너리 및 관련 라이브러리는 "있는 그대로(AS-IS)" 제공되며, 명시적이거나 묵시적인 어떠한 보증(상품성, 특정 목적에의 적합성 등)도 제공하지 않습니다.
+
+### 2) 주요 오픈소스 컴포넌트
+* **OpenCV (`opencv-python`)**: Apache License 2.0 (Copyright (c) OpenCV Foundation)
+* **CustomTkinter**: MIT License (Copyright (c) 2023 Tom Schimansky)
+* **Pillow (PIL)**: Historical Permission Notice and Disclaimer (HPND)
+* **pure-python-adb**: MIT License (Copyright (c) 2018 Swind Zheng)
+

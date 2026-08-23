@@ -10,6 +10,8 @@ customtkinter_datas = collect_data_files("customtkinter")
 # Base extra datas
 extra_datas = [
     ("ADB", "ADB"),
+    ("LICENSE-adb.txt", "."),
+    ("LICENSE", "."),
 ]
 
 # Tcl/Tk support for Python 3.14+ (where Tcl 9 zipfs is used) and standard Python versions

@@ -1,0 +1,46 @@
+MIT License
+
+Copyright (c) 2026 Terabox Auto Clicker Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+THIRD-PARTY OPEN SOURCE NOTICES & LICENSES
+================================================================================
+
+1. Android Debug Bridge (ADB)
+   - Component: ADB executable and libraries (`ADB/adb.exe`, `AdbWinApi.dll`, etc.)
+   - Copyright: Copyright (C) 2006-2024 The Android Open Source Project
+   - License: Apache License, Version 2.0 (see LICENSE-adb.txt and ADB/NOTICE.txt)
+   - Link: https://android.googlesource.com/platform/packages/modules/adb/
+
+2. OpenCV (Open Source Computer Vision Library)
+   - License: Apache License, Version 2.0
+   - Copyright: Copyright (C) 2000-2024 OpenCV Foundation / Intel Corporation
+   - Link: https://opencv.org/
+
+3. CustomTkinter
+   - License: MIT License
+   - Copyright: Copyright (c) 2023 Tom Schimansky
+   - Link: https://github.com/TomSchimansky/CustomTkinter
+
+4. Pure Python ADB (pure-python-adb)
+   - License: MIT License
+   - Copyright: Copyright (c) 2018 Swind Zheng
+   - Link: https://github.com/Swind/pure-python-adb
