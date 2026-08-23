@@ -158,24 +158,56 @@ class CTKContextMenu:
             CTKContextMenu.close_active()
 
     def add_command(self, icon, label, command, is_danger=False):
-        btn = ctk.CTkButton(
+        row = ctk.CTkFrame(
             self.frame,
-            text=f"{icon}  {label}",
-            anchor="w",
-            height=30,
-            width=185,
-            font=ctk.CTkFont(size=12, weight="bold" if is_danger else "normal"),
             fg_color="transparent",
-            text_color="#EF4444" if is_danger else COLOR_TEXT_PRIMARY,
-            hover_color=COLOR_DANGER_HOVER if is_danger else COLOR_PRIMARY,
             corner_radius=RADIUS_SM,
-            command=lambda: self._execute(command),
+            height=32,
+            cursor="hand2"
         )
-        btn.pack(fill="x", padx=4, pady=2)
+        row.pack(fill="x", padx=4, pady=1)
+
+        text_col = "#F87171" if is_danger else COLOR_TEXT_PRIMARY
+        hover_col = COLOR_DANGER if is_danger else COLOR_PRIMARY
+
+        icon_lbl = ctk.CTkLabel(
+            row,
+            text=icon,
+            width=24,
+            anchor="center",
+            font=ctk.CTkFont(size=12),
+            text_color=text_col
+        )
+        icon_lbl.pack(side="left", padx=(6, 4), pady=4)
+
+        text_lbl = ctk.CTkLabel(
+            row,
+            text=label,
+            anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold" if is_danger else "normal"),
+            text_color=text_col
+        )
+        text_lbl.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=4)
+
+        def on_enter(e):
+            if row.winfo_exists():
+                row.configure(fg_color=hover_col)
+
+        def on_leave(e):
+            if row.winfo_exists():
+                row.configure(fg_color="transparent")
+
+        def on_click(e=None):
+            self._execute(command)
+
+        for widget in (row, icon_lbl, text_lbl):
+            widget.bind("<Enter>", on_enter)
+            widget.bind("<Leave>", on_leave)
+            widget.bind("<Button-1>", on_click)
 
     def add_separator(self):
         sep = ctk.CTkFrame(self.frame, height=1, fg_color="#374151")
-        sep.pack(fill="x", padx=6, pady=3)
+        sep.pack(fill="x", padx=6, pady=4)
 
     def _execute(self, command):
         CTKContextMenu.close_active()
