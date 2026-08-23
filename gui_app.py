@@ -245,16 +245,27 @@ class TemplatePreviewTooltip:
             w_width = tw.winfo_reqwidth()
             w_height = tw.winfo_reqheight()
 
-            x = widget.winfo_rootx() + widget.winfo_width() + 8
-            y = widget.winfo_rooty() - 10
+            # 마우스 커서 위치 기준으로 자연스럽게 팝업 배치
+            try:
+                pointer_x = widget.winfo_pointerx()
+                pointer_y = widget.winfo_pointery()
+            except Exception:
+                pointer_x = widget.winfo_rootx()
+                pointer_y = widget.winfo_rooty()
+
+            x = pointer_x + 16
+            y = pointer_y + 12
 
             screen_w = tw.winfo_screenwidth()
             screen_h = tw.winfo_screenheight()
 
-            if x + w_width > screen_w - 10:
-                x = widget.winfo_rootx() - w_width - 8
+            # 화면 밖으로 벗어남 방지
+            if x + w_width > screen_w - 15:
+                x = max(10, pointer_x - w_width - 12)
             if y + w_height > screen_h - 40:
-                y = screen_h - w_height - 40
+                y = max(10, pointer_y - w_height - 10)
+            if x < 10:
+                x = 10
             if y < 10:
                 y = 10
 
@@ -2084,26 +2095,39 @@ class InstanceTabFrame(ctk.CTkFrame):
         # Right-click Context Menu (우클릭 컨텍스트 메뉴)
         def show_context_menu(event):
             TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
-            menu = tk.Menu(self, tearoff=0, bg="#2B2B2B", fg="white", activebackground="#1F538D", activeforeground="white", relief="flat")
-            menu.add_command(
-                label=f"✏️ 이름 변경 (Rename)",
-                command=lambda f=filename, fb=is_fallback: RenameTemplateWindow(self, f, fb)
+            menu = tk.Menu(
+                self,
+                tearoff=0,
+                bg="#1E222B",
+                fg="#F1F5F9",
+                activebackground=COLOR_PRIMARY,
+                activeforeground="#FFFFFF",
+                activeborderwidth=0,
+                bd=1,
+                relief="solid",
+                font=("Segoe UI", 10),
             )
             menu.add_command(
-                label="🎯 즉시 실행 (Run Now)",
-                command=lambda f=filename, fb=is_fallback: self.on_template_double_click(f, fb)
+                label="✏️   이름 변경 (Rename)",
+                command=lambda f=filename, fb=is_fallback: RenameTemplateWindow(self, f, fb),
             )
             menu.add_command(
-                label="⏱️ 지연 시간 설정 (Set Delay)",
-                command=lambda f=filename, fb=is_fallback: (self.set_fallback_template_delay_event(f) if fb else self.set_template_delay_event(f))
+                label="🎯   즉시 실행 (Run Now)",
+                command=lambda f=filename, fb=is_fallback: self.on_template_double_click(f, fb),
             )
-            menu.add_separator()
             menu.add_command(
-                label="🗑️ 템플릿 삭제 (Delete)",
-                command=lambda f=filename, fb=is_fallback: (self.delete_fallback_template_event(f) if fb else self.delete_template_event(f))
+                label="⏱️   지연 시간 설정 (Set Delay)",
+                command=lambda f=filename, fb=is_fallback: (self.set_fallback_template_delay_event(f) if fb else self.set_template_delay_event(f)),
+            )
+            menu.add_separator(background="#2E3545")
+            menu.add_command(
+                label="🗑️   템플릿 삭제 (Delete)",
+                command=lambda f=filename, fb=is_fallback: (self.delete_fallback_template_event(f) if fb else self.delete_template_event(f)),
             )
             try:
-                menu.tk_popup(event.x_root, event.y_root)
+                pop_x = event.x_root if hasattr(event, "x_root") and event.x_root > 0 else self.winfo_pointerx()
+                pop_y = event.y_root if hasattr(event, "y_root") and event.y_root > 0 else self.winfo_pointery()
+                menu.tk_popup(pop_x, pop_y)
             finally:
                 menu.grab_release()
 
