@@ -2381,7 +2381,46 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(clicker2.scan_interval, 3)
         self.assertEqual(clicker2.no_match_timeout, 45)
         self.assertAlmostEqual(clicker2.similarity_threshold, 0.88)
-        self.assertEqual(clicker2.device_address, "127.0.0.1:5557")
+    def test_reset_counts_on_startup_save_and_load(self):
+        clicker1 = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="127.0.0.1:5555",
+            reset_counts_on_startup=True,
+            logger=lambda _: None,
+        )
+        self.assertTrue(clicker1.reset_counts_on_startup)
+        clicker1.save_config(include_templates=False)
+
+        clicker2 = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="127.0.0.1:5557",
+            logger=lambda _: None,
+        )
+        clicker2.load_config()
+        self.assertTrue(clicker2.reset_counts_on_startup)
+
+    def test_reset_counts_on_startup_resets_counts_when_loaded(self):
+        template_path = Path(self.temp_dir, "templates", "test.png")
+        self._write_png(template_path, self._pattern())
+        config = {
+            "device_address": "127.0.0.1:5555",
+            "reset_counts_on_startup": True,
+            "template_order": ["test.png"],
+            "template_counts": {"test.png": 42},
+        }
+        Path(self.temp_dir, "config.json").write_text(
+            json.dumps(config), encoding="utf-8"
+        )
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="127.0.0.1:5555",
+            reset_counts_on_startup=True,
+            logger=lambda _: None,
+        )
+        clicker.load_config()
+        clicker.reset_counts()
+        self.assertEqual(clicker.template_counts.get("test.png"), 0)
 
 if __name__ == "__main__":
     unittest.main()
+

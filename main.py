@@ -84,6 +84,7 @@ DEFAULT_RANDOM_CLICK_INTERVAL = 30
 DEFAULT_DOUBLE_CLICK_INTERVAL = 1.0
 DEFAULT_POST_ACTION_DELAY = 2.0
 DEFAULT_CONSECUTIVE_MATCH_THRESHOLD = 0
+DEFAULT_RESET_COUNTS_ON_STARTUP = False
 APP_DIR = get_app_dir()
 CONFIG_PATH = os.path.join(APP_DIR, CONFIG_FILENAME)
 ADB_PATH = get_default_adb_path(APP_DIR)
@@ -140,6 +141,7 @@ class TeraboxClicker:
         performance_metrics=None,
         consecutive_match_threshold=None,
         on_consecutive_match_callback=None,
+        reset_counts_on_startup=None,
     ):
         self.base_dir = os.path.abspath(base_dir or APP_DIR)
         self.adb_path = adb_path or get_default_adb_path(self.base_dir)
@@ -147,6 +149,11 @@ class TeraboxClicker:
         self.port = port
         self._device_address_explicit = device_address is not None
         self.device_address = str(device_address or DEVICE_ADDRESS).strip()
+        self.reset_counts_on_startup = (
+            bool(reset_counts_on_startup)
+            if reset_counts_on_startup is not None
+            else DEFAULT_RESET_COUNTS_ON_STARTUP
+        )
         self.scan_interval = (
             scan_interval if scan_interval is not None else DEFAULT_SCAN_INTERVAL
         )
@@ -912,6 +919,10 @@ class TeraboxClicker:
             ),
             minimum=0,
         )
+        self.reset_counts_on_startup = self._safe_bool(
+            source.get("reset_counts_on_startup"),
+            getattr(self, "reset_counts_on_startup", DEFAULT_RESET_COUNTS_ON_STARTUP),
+        )
 
     @staticmethod
     def _sync_order(saved_order, current_files):
@@ -1109,6 +1120,7 @@ class TeraboxClicker:
             "fallback_final_action": self.fallback_final_action,
             "fallback_final_coords": list(self.fallback_final_coords),
             "consecutive_match_threshold": self.consecutive_match_threshold,
+            "reset_counts_on_startup": getattr(self, "reset_counts_on_startup", DEFAULT_RESET_COUNTS_ON_STARTUP),
         }
 
     def save_config(self, include_templates=True):

@@ -240,7 +240,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.clicker = parent_frame.clicker
         self._save_after_id = None
         self.title("Settings (공통 설정)")
-        self.geometry("440x780")
+        self.geometry("440x830")
         self.resizable(False, False)
         
         # 메인 창에 종속 설정 및 모달 효과
@@ -314,9 +314,23 @@ class SettingsWindow(ctk.CTkToplevel):
         self.consecutive_label.pack(fill="x", padx=30)
         self.consecutive_entry = ctk.CTkEntry(self)
         self.consecutive_entry.insert(0, str(getattr(self.clicker, 'consecutive_match_threshold', 0)))
-        self.consecutive_entry.pack(fill="x", padx=30, pady=(0, 10))
+        self.consecutive_entry.pack(fill="x", padx=30, pady=(0, 8))
         self.consecutive_entry.bind("<KeyRelease>", self.schedule_save)
         self.consecutive_entry.bind("<FocusOut>", lambda e: self.save_settings())
+
+        # Reset counts on startup switch
+        self.reset_counts_var = ctk.StringVar(
+            value="on" if getattr(self.clicker, 'reset_counts_on_startup', False) else "off"
+        )
+        self.reset_counts_switch = ctk.CTkSwitch(
+            self,
+            text="앱 실행 시 클릭 카운터 자동 초기화 (Reset on Startup)",
+            variable=self.reset_counts_var,
+            onvalue="on",
+            offvalue="off",
+            command=self.save_settings,
+        )
+        self.reset_counts_switch.pack(fill="x", padx=30, pady=(0, 10))
 
         # --- No-Match Action Section ---
         self.no_match_section_label = ctk.CTkLabel(self, text="⚡ 매칭 미발생 시 자동 동작 (No-Match Action):", anchor="w", font=ctk.CTkFont(weight="bold"))
@@ -532,6 +546,8 @@ class SettingsWindow(ctk.CTkToplevel):
                 self.clicker.consecutive_match_threshold = value
         except ValueError:
             pass
+
+        self.clicker.reset_counts_on_startup = self.reset_counts_var.get() == "on"
 
         action_key = REVERSE_NO_MATCH_ACTION_MAP.get(self.no_match_combo.get(), "none")
         self.clicker.no_match_action = action_key
@@ -2648,6 +2664,11 @@ class App(ctk.CTk):
         if first_tab:
             self.tabview.set(first_tab)
             self.after(100, lambda: self.tabview.set(first_tab))
+
+        if config.get("reset_counts_on_startup", False):
+            self.reset_all_template_counts(is_fallback=False)
+            self.reset_all_template_counts(is_fallback=True)
+
         self.save_app_config()
 
     def add_new_instance_dialog(self):
