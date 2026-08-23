@@ -112,7 +112,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(first[:2], (99, 0))
         self.assertEqual(second[:2], (99, 0))
         self.assertEqual(third[:2], (99, 0))
-        self.assertEqual(fromfile.call_count, 2)
+        self.assertEqual(fromfile.call_count, 1)
 
     def test_flat_template_uses_stable_matching_method(self):
         template = np.full((8, 8, 3), 255, dtype=np.uint8)
@@ -647,11 +647,11 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         mock_device.create_connection.return_value = connection
         clicker.device = mock_device
 
-        # Mock subprocess to fail so fallback to ppadb triggers
+        # Mock socket and subprocess to fail so fallback to ppadb triggers
         failed_proc = Mock()
         failed_proc.returncode = 1
         failed_proc.stdout = b""
-        with patch("main.subprocess.run", return_value=failed_proc):
+        with patch.object(clicker, "_capture_direct_socket", return_value=(None, "transport")), patch("main.subprocess.run", return_value=failed_proc):
             result = clicker.capture_screen(grayscale=False)
 
         self.assertIsNotNone(result)
@@ -932,7 +932,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         clicker.device = device
         proc = subprocess.CompletedProcess([], 0, b"corrupt-png", b"")
 
-        with patch("main.subprocess.run", return_value=proc) as run:
+        with patch.object(clicker, "_capture_direct_socket", return_value=(None, "transport")), patch("main.subprocess.run", return_value=proc) as run:
             result = clicker.capture_screen(grayscale=False)
 
         self.assertIsNotNone(result)
@@ -942,6 +942,29 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
         self.assertEqual(command[command.index("-s") + 1], "emulator-5554")
         device.create_connection.assert_called_once_with(timeout=ADB_COMMAND_TIMEOUT)
+
+    def test_capture_direct_socket_success(self):
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="emulator-test",
+            logger=lambda _: None,
+        )
+        test_img = np.zeros((40, 50, 3), dtype=np.uint8)
+        test_img[5:15, 5:15] = [255, 0, 0]
+        _, png_bytes = cv2.imencode(".png", test_img)
+        payload = png_bytes.tobytes()
+
+        # Mock direct socket interaction
+        mock_sock = MagicMock()
+        mock_sock.recv.side_effect = [b"OKAY", b"OKAY", payload, b""]
+
+        with patch("main.socket.socket", return_value=mock_sock):
+            img, failure = clicker._capture_direct_socket("emulator-test", "png", use_grayscale=False)
+
+        self.assertIsNotNone(img)
+        self.assertIsNone(failure)
+        self.assertEqual(img.shape, (40, 50, 3))
+        mock_sock.connect.assert_called_once_with(("127.0.0.1", 5037))
 
     def test_reconnect_backoff_avoids_repeated_connect_processes(self):
         clicker = TeraboxClicker(

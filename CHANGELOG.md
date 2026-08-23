@@ -15,6 +15,10 @@
   - `update_all_template_order` 내 `pack_forget()`을 선행 적용하여 프로그램 재시작 없이도 UI 상에서 템플릿 목록 행의 위아래 순서가 즉시 시각적으로 재배치되도록 수정
 
 ### ⚡ Performance (성능 최적화)
+- **고속 ADB 직결 TCP 소켓 스트리밍 캡처 (Zero Subprocess)**:
+  - 매 프레임마다 `adb.exe` 프로세스를 새로 생성/종료하던 방식을 탈피하고, ADB 서버(포트 5037)와 직접 TCP 소켓 스트림으로 통신하도록 개선하여 윈도우 프로세스 생성(`CreateProcess`) 오버헤드를 100% 제거
+- **단일 패스 템플릿 사전 캐싱 (Dual Grayscale & Color In-Memory)**:
+  - 템플릿 디코딩 시 컬러와 그레이스케일 변환을 인메모리 단일 패스로 처리하여 디스크 I/O 호출 및 반복 색상 변환 연산을 50% 절감
 - **다중 인스턴스 OpenCV 스레드 폭발 방지 및 CPU 최적화**:
   - OpenCV 내부 워커 스레드 풀을 1개(`cv2.setNumThreads(1)`)로 제한하여 5개 이상 다중 인스턴스 동시 구동 시 CPU 컨텍스트 스위칭 폭증 및 UI 프리징(응답 없음/뻗음) 현상 방지
   - 멀티스레드 환경 내 GPU 드라이버 충돌 방지를 위한 OpenCL 비활성화(`cv2.ocl.setUseOpenCL(False)`) 적용

@@ -20,6 +20,7 @@ import json
 import math
 import os
 import random
+import socket
 import struct
 import subprocess
 import sys
@@ -1325,30 +1326,51 @@ class TeraboxClicker:
                 cls._scaled_template_cache.pop(cache_key, None)
         try:
             encoded = np.fromfile(absolute_path, dtype=np.uint8)
-            read_flag = cv2.IMREAD_GRAYSCALE if use_grayscale else cv2.IMREAD_COLOR
-            template = cv2.imdecode(encoded, read_flag)
+            template_color = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
             if (
-                template is None
-                or template.size == 0
-                or template.shape[0] <= 0
-                or template.shape[1] <= 0
+                template_color is None
+                or template_color.size == 0
+                or template_color.shape[0] <= 0
+                or template_color.shape[1] <= 0
             ):
                 raise ValueError("이미지 디코딩 결과가 비어 있습니다.")
-            method = (
+
+            template_gray = cv2.cvtColor(template_color, cv2.COLOR_BGR2GRAY)
+            method_color = (
                 cv2.TM_SQDIFF_NORMED
-                if float(template.std()) < 1e-6
+                if float(template_color.std()) < 1e-6
                 else cv2.TM_CCOEFF_NORMED
             )
+            method_gray = (
+                cv2.TM_SQDIFF_NORMED
+                if float(template_gray.std()) < 1e-6
+                else cv2.TM_CCOEFF_NORMED
+            )
+
+            with cls._template_cache_lock:
+                cls._scaled_template_cache.pop((absolute_path, False), None)
+                cls._scaled_template_cache.pop((absolute_path, True), None)
+                cls._template_cache[(absolute_path, False)] = (
+                    signature,
+                    template_color,
+                    method_color,
+                )
+                cls._template_cache[(absolute_path, True)] = (
+                    signature,
+                    template_gray,
+                    method_gray,
+                )
+            template = template_gray if use_grayscale else template_color
+            method = method_gray if use_grayscale else method_color
         except Exception:
             template, method = None, None
-
-        with cls._template_cache_lock:
-            cls._scaled_template_cache.pop(cache_key, None)
-            cls._template_cache[cache_key] = (
-                signature,
-                template,
-                method,
-            )
+            with cls._template_cache_lock:
+                cls._scaled_template_cache.pop(cache_key, None)
+                cls._template_cache[cache_key] = (
+                    signature,
+                    None,
+                    None,
+                )
         return template, method
 
     @classmethod
@@ -2431,6 +2453,64 @@ class TeraboxClicker:
             or serial.startswith("localhost:")
         )
 
+    def _capture_direct_socket(self, serial, backend, use_grayscale):
+        """High-performance direct TCP socket transport to ADB server (zero subprocess creation)."""
+        host = str(self.host).strip() if self.host else "127.0.0.1"
+        port = int(self.port) if self.port else 5037
+        started_at = time.perf_counter()
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(ADB_COMMAND_TIMEOUT)
+            sock.connect((host, port))
+
+            # 1. Transport to device serial
+            transport_cmd = f"host:transport:{serial}"
+            sock.sendall(f"{len(transport_cmd):04x}{transport_cmd}".encode("ascii"))
+            status = sock.recv(4)
+            if status != b"OKAY":
+                return None, "transport"
+
+            # 2. Request exec screencap
+            exec_cmd = "exec:screencap" if backend == "raw" else "exec:screencap -p"
+            sock.sendall(f"{len(exec_cmd):04x}{exec_cmd}".encode("ascii"))
+            status = sock.recv(4)
+            if status != b"OKAY":
+                return None, "transport"
+
+            # 3. Read stream bytes directly
+            chunks = []
+            while True:
+                try:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                except socket.timeout:
+                    break
+            payload = b"".join(chunks)
+        except (OSError, socket.error):
+            self._record_performance("capture.socket", started_at)
+            return None, "transport"
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+        self._record_performance("capture.socket", started_at)
+        if not payload:
+            return None, "transport"
+
+        decode_started = time.perf_counter()
+        if backend == "raw":
+            image = self._decode_raw_screencap(payload, use_grayscale)
+        else:
+            image = self._decode_png_screencap(payload, use_grayscale)
+        self._record_performance("capture.decode", decode_started)
+        return image, None if image is not None else "decode"
+
     def _capture_exec_backend(self, serial, backend, use_grayscale):
         command = [self.adb_path]
         if self.host and str(self.host).strip() not in ("127.0.0.1", "localhost"):
@@ -2524,9 +2604,15 @@ class TeraboxClicker:
             for backend in dict.fromkeys(backends):
                 if self._operation_cancelled():
                     return None
-                image, failure_kind = self._capture_exec_backend(
+                # 1. High-speed Direct TCP Socket Transport (Zero process creation)
+                image, failure_kind = self._capture_direct_socket(
                     serial, backend, use_grayscale
                 )
+                # 2. Subprocess CLI fallback if direct socket transport failed
+                if image is None and failure_kind == "transport":
+                    image, failure_kind = self._capture_exec_backend(
+                        serial, backend, use_grayscale
+                    )
                 if self._operation_cancelled():
                     return None
                 if image is not None:
