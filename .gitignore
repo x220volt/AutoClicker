@@ -36,6 +36,7 @@ Thumbs.db
 # Project temporary and archive files
 *.zip
 *.tmp
+*.backup.json
 debug_screen.png
 
 # Template images (keep local only, do not track in git)
