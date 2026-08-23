@@ -379,81 +379,89 @@ class SettingsWindow(ctk.CTkToplevel):
         self.clicker = parent_frame.clicker
         self._save_after_id = None
         self.title("Settings (공통 설정)")
-        self.geometry("440x830")
-        self.resizable(False, False)
+        self.geometry("460x650")
+        self.minsize(440, 500)
         
         # 메인 창에 종속 설정 및 모달 효과
         self.transient(parent_frame.winfo_toplevel())
         self.grab_set()
 
-        # Header
-        self.header_label = ctk.CTkLabel(self, text="⚙️ 공통 설정 (Global Settings)", font=ctk.CTkFont(size=16, weight="bold"))
-        self.header_label.pack(pady=(15, 10))
+        # Header (Fixed Top)
+        self.header_label = ctk.CTkLabel(
+            self,
+            text="⚙️ 공통 설정 (Global Settings)",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        self.header_label.pack(pady=(15, 8))
+
+        # Main Scrollable Body
+        self.scroll_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.scroll_frame.pack(fill="both", expand=True, padx=15, pady=(0, 5))
 
         # Scan Interval
-        self.interval_label = ctk.CTkLabel(self, text="스캔 간격 (Scan Interval, sec):", anchor="w")
-        self.interval_label.pack(fill="x", padx=30)
-        self.interval_entry = ctk.CTkEntry(self)
+        self.interval_label = ctk.CTkLabel(self.scroll_frame, text="스캔 간격 (Scan Interval, sec):", anchor="w")
+        self.interval_label.pack(fill="x", padx=15)
+        self.interval_entry = ctk.CTkEntry(self.scroll_frame)
         self.interval_entry.insert(0, str(self.clicker.scan_interval))
-        self.interval_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.interval_entry.pack(fill="x", padx=15, pady=(0, 8))
         self.interval_entry.bind("<KeyRelease>", self.schedule_save)
         self.interval_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
         # Double Click Interval
-        self.double_click_label = ctk.CTkLabel(self, text="더블클릭(클릭클릭) 간격 (Double-Click Interval, sec):", anchor="w")
-        self.double_click_label.pack(fill="x", padx=30)
-        self.double_click_entry = ctk.CTkEntry(self)
+        self.double_click_label = ctk.CTkLabel(self.scroll_frame, text="더블클릭(클릭클릭) 간격 (Double-Click Interval, sec):", anchor="w")
+        self.double_click_label.pack(fill="x", padx=15)
+        self.double_click_entry = ctk.CTkEntry(self.scroll_frame)
         self.double_click_entry.insert(0, str(getattr(self.clicker, 'double_click_interval', 1.0)))
-        self.double_click_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.double_click_entry.pack(fill="x", padx=15, pady=(0, 8))
         self.double_click_entry.bind("<KeyRelease>", self.schedule_save)
         self.double_click_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
         # Post-Action Delay (동작 후 대기 시간)
-        self.post_delay_label = ctk.CTkLabel(self, text="동작 후 대기 시간 (Post-Action Delay, sec):", anchor="w")
-        self.post_delay_label.pack(fill="x", padx=30)
-        self.post_delay_entry = ctk.CTkEntry(self)
+        self.post_delay_label = ctk.CTkLabel(self.scroll_frame, text="동작 후 대기 시간 (Post-Action Delay, sec):", anchor="w")
+        self.post_delay_label.pack(fill="x", padx=15)
+        self.post_delay_entry = ctk.CTkEntry(self.scroll_frame)
         self.post_delay_entry.insert(0, str(getattr(self.clicker, 'post_action_delay', 2.0)))
-        self.post_delay_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.post_delay_entry.pack(fill="x", padx=15, pady=(0, 8))
         self.post_delay_entry.bind("<KeyRelease>", self.schedule_save)
         self.post_delay_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
         # Similarity Threshold
-        self.threshold_label = ctk.CTkLabel(self, text="이미지 유사도 임계값 (Similarity Threshold 0.1~1.0):", anchor="w")
-        self.threshold_label.pack(fill="x", padx=30)
-        self.threshold_entry = ctk.CTkEntry(self)
+        self.threshold_label = ctk.CTkLabel(self.scroll_frame, text="이미지 유사도 임계값 (Similarity Threshold 0.1~1.0):", anchor="w")
+        self.threshold_label.pack(fill="x", padx=15)
+        self.threshold_entry = ctk.CTkEntry(self.scroll_frame)
         self.threshold_entry.insert(0, str(self.clicker.similarity_threshold))
-        self.threshold_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.threshold_entry.pack(fill="x", padx=15, pady=(0, 8))
         self.threshold_entry.bind("<KeyRelease>", self.schedule_save)
         self.threshold_entry.bind("<FocusOut>", lambda e: self.save_settings())
+
         self.grayscale_var = ctk.StringVar(
             value="on" if self.clicker.match_grayscale else "off"
         )
         self.grayscale_switch = ctk.CTkSwitch(
-            self,
+            self.scroll_frame,
             text="고속 그레이스케일 매칭 (색상 구분 필요 시 끄기)",
             variable=self.grayscale_var,
             onvalue="on",
             offvalue="off",
             command=self.save_settings,
         )
-        self.grayscale_switch.pack(fill="x", padx=30, pady=(0, 8))
-
+        self.grayscale_switch.pack(fill="x", padx=15, pady=(0, 10))
 
         # Timeout Alert
-        self.timeout_label = ctk.CTkLabel(self, text="매칭 없음 경고 알림 시간 (No-match Alert sec, 0: 끄기):", anchor="w")
-        self.timeout_label.pack(fill="x", padx=30)
-        self.timeout_entry = ctk.CTkEntry(self)
+        self.timeout_label = ctk.CTkLabel(self.scroll_frame, text="매칭 없음 경고 알림 시간 (No-match Alert sec, 0: 끄기):", anchor="w")
+        self.timeout_label.pack(fill="x", padx=15)
+        self.timeout_entry = ctk.CTkEntry(self.scroll_frame)
         self.timeout_entry.insert(0, str(self.clicker.no_match_timeout))
-        self.timeout_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.timeout_entry.pack(fill="x", padx=15, pady=(0, 8))
         self.timeout_entry.bind("<KeyRelease>", self.schedule_save)
         self.timeout_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
         # Consecutive Match Alert
-        self.consecutive_label = ctk.CTkLabel(self, text="동일 템플릿 연속 매칭 경고 횟수 (0: 끄기):", anchor="w")
-        self.consecutive_label.pack(fill="x", padx=30)
-        self.consecutive_entry = ctk.CTkEntry(self)
+        self.consecutive_label = ctk.CTkLabel(self.scroll_frame, text="동일 템플릿 연속 매칭 경고 횟수 (0: 끄기):", anchor="w")
+        self.consecutive_label.pack(fill="x", padx=15)
+        self.consecutive_entry = ctk.CTkEntry(self.scroll_frame)
         self.consecutive_entry.insert(0, str(getattr(self.clicker, 'consecutive_match_threshold', 0)))
-        self.consecutive_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.consecutive_entry.pack(fill="x", padx=15, pady=(0, 8))
         self.consecutive_entry.bind("<KeyRelease>", self.schedule_save)
         self.consecutive_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
@@ -462,40 +470,40 @@ class SettingsWindow(ctk.CTkToplevel):
             value="on" if getattr(self.clicker, 'reset_counts_on_startup', False) else "off"
         )
         self.reset_counts_switch = ctk.CTkSwitch(
-            self,
+            self.scroll_frame,
             text="앱 실행 시 클릭 카운터 자동 초기화 (Reset on Startup)",
             variable=self.reset_counts_var,
             onvalue="on",
             offvalue="off",
             command=self.save_settings,
         )
-        self.reset_counts_switch.pack(fill="x", padx=30, pady=(0, 10))
+        self.reset_counts_switch.pack(fill="x", padx=15, pady=(0, 10))
 
         # --- No-Match Action Section ---
-        self.no_match_section_label = ctk.CTkLabel(self, text="⚡ 매칭 미발생 시 자동 동작 (No-Match Action):", anchor="w", font=ctk.CTkFont(weight="bold"))
-        self.no_match_section_label.pack(fill="x", padx=30, pady=(5, 2))
+        self.no_match_section_label = ctk.CTkLabel(self.scroll_frame, text="⚡ 매칭 미발생 시 자동 동작 (No-Match Action):", anchor="w", font=ctk.CTkFont(weight="bold"))
+        self.no_match_section_label.pack(fill="x", padx=15, pady=(5, 2))
 
         curr_action = getattr(self.clicker, 'no_match_action', 'none')
         curr_label = NO_MATCH_ACTION_MAP.get(curr_action, "사용 안 함 (Disabled)")
         self.no_match_combo = ctk.CTkOptionMenu(
-            self, 
+            self.scroll_frame, 
             values=list(NO_MATCH_ACTION_MAP.values()),
             command=self.on_action_changed
         )
         self.no_match_combo.set(curr_label)
-        self.no_match_combo.pack(fill="x", padx=30, pady=(0, 8))
+        self.no_match_combo.pack(fill="x", padx=15, pady=(0, 8))
 
-        self.no_match_interval_label = ctk.CTkLabel(self, text="동작 대기 시간 (Action Interval, sec):", anchor="w")
-        self.no_match_interval_label.pack(fill="x", padx=30)
-        self.no_match_interval_entry = ctk.CTkEntry(self)
+        self.no_match_interval_label = ctk.CTkLabel(self.scroll_frame, text="동작 대기 시간 (Action Interval, sec):", anchor="w")
+        self.no_match_interval_label.pack(fill="x", padx=15)
+        self.no_match_interval_entry = ctk.CTkEntry(self.scroll_frame)
         self.no_match_interval_entry.insert(0, str(getattr(self.clicker, 'no_match_interval', 30)))
-        self.no_match_interval_entry.pack(fill="x", padx=30, pady=(0, 8))
+        self.no_match_interval_entry.pack(fill="x", padx=15, pady=(0, 8))
         self.no_match_interval_entry.bind("<KeyRelease>", self.schedule_save)
         self.no_match_interval_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
         # Custom Coordinate Frame (For Custom Click & Custom Double Click)
-        self.coord_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.coord_frame.pack(fill="x", padx=30, pady=(0, 10))
+        self.coord_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        self.coord_frame.pack(fill="x", padx=15, pady=(0, 10))
 
         coords = getattr(self.clicker, 'no_match_coords', [500, 500])
         self.coord_x_label = ctk.CTkLabel(self.coord_frame, text="X:")
@@ -528,9 +536,12 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.update_coord_frame_visibility(curr_action)
 
-        # Bottom Buttons (License Notice & Close)
+        # Footer Frame (Fixed Bottom)
+        self.footer_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.footer_frame.pack(fill="x", padx=20, pady=(5, 12))
+
         self.license_btn = ctk.CTkButton(
-            self,
+            self.footer_frame,
             text="📜 오픈소스 라이선스 고지 (Licenses)",
             height=30,
             fg_color="transparent",
@@ -541,10 +552,10 @@ class SettingsWindow(ctk.CTkToplevel):
             corner_radius=RADIUS_MD,
             command=lambda: LicenseNoticeWindow(self)
         )
-        self.license_btn.pack(fill="x", padx=30, pady=(4, 6))
+        self.license_btn.pack(fill="x", pady=(0, 6))
 
         self.close_btn = ctk.CTkButton(
-            self,
+            self.footer_frame,
             text="닫기 (Close)",
             height=34,
             fg_color=COLOR_NEUTRAL,
@@ -552,96 +563,9 @@ class SettingsWindow(ctk.CTkToplevel):
             corner_radius=RADIUS_MD,
             command=self.close_window
         )
-        self.close_btn.pack(fill="x", padx=30, pady=(4, 15))
+        self.close_btn.pack(fill="x")
 
         self.protocol("WM_DELETE_WINDOW", self.close_window)
-
-
-class LicenseNoticeWindow(ctk.CTkToplevel):
-    def __init__(self, parent_window):
-        super().__init__(parent_window)
-        self.title("📜 오픈소스 라이선스 고지 (Open Source Licenses)")
-        self.geometry("620x540")
-        self.minsize(500, 400)
-
-        self.transient(parent_window)
-        self.grab_set()
-
-        self.header_label = ctk.CTkLabel(
-            self,
-            text="📜 오픈소스 소프트웨어 라이선스 고지",
-            font=ctk.CTkFont(size=15, weight="bold")
-        )
-        self.header_label.pack(padx=20, pady=(15, 5))
-
-        self.sub_label = ctk.CTkLabel(
-            self,
-            text="본 프로그램은 아래 오픈소스 컴포넌트를 번들링하거나 활용하고 있습니다.",
-            font=ctk.CTkFont(size=11),
-            text_color=COLOR_TEXT_MUTED
-        )
-        self.sub_label.pack(padx=20, pady=(0, 10))
-
-        self.textbox = ctk.CTkTextbox(self, corner_radius=RADIUS_SM, font=ctk.CTkFont(size=11))
-        self.textbox.pack(fill="both", expand=True, padx=20, pady=(0, 10))
-
-        license_text = (
-            "================================================================================\n"
-            "1. Android Debug Bridge (ADB)\n"
-            "================================================================================\n"
-            "Component: ADB executable and libraries (ADB/adb.exe, AdbWinApi.dll, etc.)\n"
-            "Copyright (C) 2006-2024 The Android Open Source Project\n"
-            "License: Apache License, Version 2.0\n\n"
-            "Licensed under the Apache License, Version 2.0 (the \"License\");\n"
-            "you may not use this file except in compliance with the License.\n"
-            "You may obtain a copy of the License at:\n"
-            "    http://www.apache.org/licenses/LICENSE-2.0\n\n"
-            "Unless required by applicable law or agreed to in writing, software\n"
-            "distributed under the License is distributed on an \"AS IS\" BASIS,\n"
-            "WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n"
-            "See the License for the specific language governing permissions and\n"
-            "limitations under the License.\n\n"
-            "[면책 조항 (Disclaimer)]\n"
-            "Apache 2.0 라이선스 조건에 따라 본 소프트웨어에 포함된 ADB 바이너리 및 관련\n"
-            "라이브러리는 '있는 그대로(AS-IS)' 제공되며, 명시적이거나 묵시적인 어떠한\n"
-            "보증(상품성, 특정 목적에의 적합성 등)도 제공하지 않습니다.\n\n"
-            "================================================================================\n"
-            "2. OpenCV (opencv-python)\n"
-            "================================================================================\n"
-            "Copyright (C) 2000-2024 OpenCV Foundation / Intel Corporation\n"
-            "License: Apache License 2.0 (https://opencv.org/)\n\n"
-            "================================================================================\n"
-            "3. CustomTkinter\n"
-            "================================================================================\n"
-            "Copyright (c) 2023 Tom Schimansky\n"
-            "License: MIT License (https://github.com/TomSchimansky/CustomTkinter)\n\n"
-            "================================================================================\n"
-            "4. pure-python-adb\n"
-            "================================================================================\n"
-            "Copyright (c) 2018 Swind Zheng\n"
-            "License: MIT License (https://github.com/Swind/pure-python-adb)\n"
-        )
-        self.textbox.insert("1.0", license_text)
-        self.textbox.configure(state="disabled")
-
-        self.close_btn = ctk.CTkButton(
-            self,
-            text="확인 (Close)",
-            height=32,
-            fg_color=COLOR_NEUTRAL,
-            hover_color=COLOR_NEUTRAL_HOVER,
-            corner_radius=RADIUS_MD,
-            command=self.close_window
-        )
-        self.close_btn.pack(fill="x", padx=20, pady=(0, 15))
-        self.protocol("WM_DELETE_WINDOW", self.close_window)
-
-    def close_window(self):
-        try:
-            self.grab_release()
-        except Exception:
-            pass
-        self.destroy()
 
     def on_action_changed(self, choice):
         action_key = REVERSE_NO_MATCH_ACTION_MAP.get(choice, "none")
@@ -847,6 +771,93 @@ class LicenseNoticeWindow(ctk.CTkToplevel):
             self._save_after_id = None
         self._apply_form_values()
         self._persist_settings()
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+
+
+class LicenseNoticeWindow(ctk.CTkToplevel):
+    def __init__(self, parent_window):
+        super().__init__(parent_window)
+        self.title("📜 오픈소스 라이선스 고지 (Open Source Licenses)")
+        self.geometry("620x540")
+        self.minsize(500, 400)
+
+        self.transient(parent_window)
+        self.grab_set()
+
+        self.header_label = ctk.CTkLabel(
+            self,
+            text="📜 오픈소스 소프트웨어 라이선스 고지",
+            font=ctk.CTkFont(size=15, weight="bold")
+        )
+        self.header_label.pack(padx=20, pady=(15, 5))
+
+        self.sub_label = ctk.CTkLabel(
+            self,
+            text="본 프로그램은 아래 오픈소스 컴포넌트를 번들링하거나 활용하고 있습니다.",
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_MUTED
+        )
+        self.sub_label.pack(padx=20, pady=(0, 10))
+
+        self.textbox = ctk.CTkTextbox(self, corner_radius=RADIUS_SM, font=ctk.CTkFont(size=11))
+        self.textbox.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
+        license_text = (
+            "================================================================================\n"
+            "1. Android Debug Bridge (ADB)\n"
+            "================================================================================\n"
+            "Component: ADB executable and libraries (ADB/adb.exe, AdbWinApi.dll, etc.)\n"
+            "Copyright (C) 2006-2024 The Android Open Source Project\n"
+            "License: Apache License, Version 2.0\n\n"
+            "Licensed under the Apache License, Version 2.0 (the \"License\");\n"
+            "you may not use this file except in compliance with the License.\n"
+            "You may obtain a copy of the License at:\n"
+            "    http://www.apache.org/licenses/LICENSE-2.0\n\n"
+            "Unless required by applicable law or agreed to in writing, software\n"
+            "distributed under the License is distributed on an \"AS IS\" BASIS,\n"
+            "WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n"
+            "See the License for the specific language governing permissions and\n"
+            "limitations under the License.\n\n"
+            "[면책 조항 (Disclaimer)]\n"
+            "Apache 2.0 라이선스 조건에 따라 본 소프트웨어에 포함된 ADB 바이너리 및 관련\n"
+            "라이브러리는 '있는 그대로(AS-IS)' 제공되며, 명시적이거나 묵시적인 어떠한\n"
+            "보증(상품성, 특정 목적에의 적합성 등)도 제공하지 않습니다.\n\n"
+            "================================================================================\n"
+            "2. OpenCV (opencv-python)\n"
+            "================================================================================\n"
+            "Copyright (C) 2000-2024 OpenCV Foundation / Intel Corporation\n"
+            "License: Apache License 2.0 (https://opencv.org/)\n\n"
+            "================================================================================\n"
+            "3. CustomTkinter\n"
+            "================================================================================\n"
+            "Copyright (c) 2023 Tom Schimansky\n"
+            "License: MIT License (https://github.com/TomSchimansky/CustomTkinter)\n\n"
+            "================================================================================\n"
+            "4. pure-python-adb\n"
+            "================================================================================\n"
+            "Copyright (c) 2018 Swind Zheng\n"
+            "License: MIT License (https://github.com/Swind/pure-python-adb)\n"
+        )
+        self.textbox.insert("1.0", license_text)
+        self.textbox.configure(state="disabled")
+
+        self.close_btn = ctk.CTkButton(
+            self,
+            text="확인 (Close)",
+            height=32,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
+            corner_radius=RADIUS_MD,
+            command=self.close_window
+        )
+        self.close_btn.pack(fill="x", padx=20, pady=(0, 15))
+        self.protocol("WM_DELETE_WINDOW", self.close_window)
+
+    def close_window(self):
         try:
             self.grab_release()
         except Exception:
