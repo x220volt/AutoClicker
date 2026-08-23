@@ -37,3 +37,9 @@ Thumbs.db
 *.zip
 *.tmp
 debug_screen.png
+
+# Template images (keep local only, do not track in git)
+templates/*
+!templates/.gitkeep
+fallback_templates/*
+!fallback_templates/.gitkeep
