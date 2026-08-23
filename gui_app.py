@@ -378,155 +378,178 @@ class SettingsWindow(ctk.CTkToplevel):
         self.parent_frame = parent_frame
         self.clicker = parent_frame.clicker
         self._save_after_id = None
-        self.title("Settings (공통 설정)")
-        self.geometry("460x650")
-        self.minsize(440, 500)
+        self.title("Settings (공통 환경 설정)")
+        self.geometry("500x680")
+        self.minsize(460, 520)
         
         # 메인 창에 종속 설정 및 모달 효과
         self.transient(parent_frame.winfo_toplevel())
         self.grab_set()
 
         # Header (Fixed Top)
+        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.header_frame.pack(fill="x", padx=20, pady=(14, 8))
+
         self.header_label = ctk.CTkLabel(
-            self,
-            text="⚙️ 공통 설정 (Global Settings)",
+            self.header_frame,
+            text="⚙️ 공통 환경 설정 (Global Settings)",
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        self.header_label.pack(pady=(15, 8))
+        self.header_label.pack(anchor="w")
+
+        self.header_sublabel = ctk.CTkLabel(
+            self.header_frame,
+            text="모든 인스턴스 탭에 공통으로 적용되는 전역 실행 파라미터입니다.",
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_MUTED
+        )
+        self.header_sublabel.pack(anchor="w", pady=(2, 0))
 
         # Main Scrollable Body
         self.scroll_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.scroll_frame.pack(fill="both", expand=True, padx=15, pady=(0, 5))
+        self.scroll_frame.pack(fill="both", expand=True, padx=12, pady=(0, 5))
 
-        # Scan Interval
-        self.interval_label = ctk.CTkLabel(self.scroll_frame, text="스캔 간격 (Scan Interval, sec):", anchor="w")
-        self.interval_label.pack(fill="x", padx=15)
-        self.interval_entry = ctk.CTkEntry(self.scroll_frame)
-        self.interval_entry.insert(0, str(self.clicker.scan_interval))
-        self.interval_entry.pack(fill="x", padx=15, pady=(0, 8))
+        def make_card(title):
+            card = ctk.CTkFrame(
+                self.scroll_frame,
+                fg_color=COLOR_CARD_BG,
+                border_color=COLOR_BORDER,
+                border_width=1,
+                corner_radius=RADIUS_MD
+            )
+            card.pack(fill="x", padx=4, pady=(0, 10))
+            
+            lbl = ctk.CTkLabel(
+                card,
+                text=title,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                text_color=COLOR_TEXT_PRIMARY,
+                anchor="w"
+            )
+            lbl.pack(fill="x", padx=14, pady=(10, 6))
+            return card
+
+        def make_entry_row(parent, label_text, default_val, unit="s"):
+            row = ctk.CTkFrame(parent, fg_color="transparent")
+            row.pack(fill="x", padx=14, pady=(0, 6))
+            lbl = ctk.CTkLabel(row, text=label_text, anchor="w", font=ctk.CTkFont(size=12))
+            lbl.pack(side="left", fill="x", expand=True)
+            if unit:
+                unit_lbl = ctk.CTkLabel(row, text=unit, text_color=COLOR_TEXT_MUTED, font=ctk.CTkFont(size=11))
+                unit_lbl.pack(side="right", padx=(4, 0))
+            entry = ctk.CTkEntry(row, width=75, height=28, corner_radius=RADIUS_SM, justify="center")
+            entry.insert(0, str(default_val))
+            entry.pack(side="right")
+            return entry
+
+        # --- Category 1: 클릭 & 타이밍 설정 ---
+        self.card_timing = make_card("⏱️  클릭 및 타이밍 (Timing & Delays)")
+        self.interval_entry = make_entry_row(self.card_timing, "화면 스캔 검사 간격 (Scan Interval)", self.clicker.scan_interval, "초")
         self.interval_entry.bind("<KeyRelease>", self.schedule_save)
         self.interval_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
-        # Double Click Interval
-        self.double_click_label = ctk.CTkLabel(self.scroll_frame, text="더블클릭(클릭클릭) 간격 (Double-Click Interval, sec):", anchor="w")
-        self.double_click_label.pack(fill="x", padx=15)
-        self.double_click_entry = ctk.CTkEntry(self.scroll_frame)
-        self.double_click_entry.insert(0, str(getattr(self.clicker, 'double_click_interval', 1.0)))
-        self.double_click_entry.pack(fill="x", padx=15, pady=(0, 8))
+        self.double_click_entry = make_entry_row(self.card_timing, "더블클릭 간격 (Double-Click Interval)", getattr(self.clicker, 'double_click_interval', 1.0), "초")
         self.double_click_entry.bind("<KeyRelease>", self.schedule_save)
         self.double_click_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
-        # Post-Action Delay (동작 후 대기 시간)
-        self.post_delay_label = ctk.CTkLabel(self.scroll_frame, text="동작 후 대기 시간 (Post-Action Delay, sec):", anchor="w")
-        self.post_delay_label.pack(fill="x", padx=15)
-        self.post_delay_entry = ctk.CTkEntry(self.scroll_frame)
-        self.post_delay_entry.insert(0, str(getattr(self.clicker, 'post_action_delay', 2.0)))
-        self.post_delay_entry.pack(fill="x", padx=15, pady=(0, 8))
+        self.post_delay_entry = make_entry_row(self.card_timing, "동작 실행 후 기본 대기 (Post-Action Delay)", getattr(self.clicker, 'post_action_delay', 2.0), "초")
         self.post_delay_entry.bind("<KeyRelease>", self.schedule_save)
         self.post_delay_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
-        # Similarity Threshold
-        self.threshold_label = ctk.CTkLabel(self.scroll_frame, text="이미지 유사도 임계값 (Similarity Threshold 0.1~1.0):", anchor="w")
-        self.threshold_label.pack(fill="x", padx=15)
-        self.threshold_entry = ctk.CTkEntry(self.scroll_frame)
-        self.threshold_entry.insert(0, str(self.clicker.similarity_threshold))
-        self.threshold_entry.pack(fill="x", padx=15, pady=(0, 8))
+        # --- Category 2: 이미지 매칭 설정 ---
+        self.card_matching = make_card("🎯  이미지 매칭 알고리즘 (Image Matching)")
+        self.threshold_entry = make_entry_row(self.card_matching, "유사도 임계값 (Similarity Threshold 0.1~1.0)", self.clicker.similarity_threshold, "")
         self.threshold_entry.bind("<KeyRelease>", self.schedule_save)
         self.threshold_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
-        self.grayscale_var = ctk.StringVar(
-            value="on" if self.clicker.match_grayscale else "off"
-        )
+        self.grayscale_var = ctk.StringVar(value="on" if self.clicker.match_grayscale else "off")
         self.grayscale_switch = ctk.CTkSwitch(
-            self.scroll_frame,
-            text="고속 그레이스케일 매칭 (색상 구분 필요 시 끄기)",
+            self.card_matching,
+            text="고속 그레이스케일 매칭 (흑백 변환으로 속도 대폭 향상)",
             variable=self.grayscale_var,
             onvalue="on",
             offvalue="off",
+            font=ctk.CTkFont(size=12),
             command=self.save_settings,
         )
-        self.grayscale_switch.pack(fill="x", padx=15, pady=(0, 10))
+        self.grayscale_switch.pack(fill="x", padx=14, pady=(2, 10))
 
-        # Timeout Alert
-        self.timeout_label = ctk.CTkLabel(self.scroll_frame, text="매칭 없음 경고 알림 시간 (No-match Alert sec, 0: 끄기):", anchor="w")
-        self.timeout_label.pack(fill="x", padx=15)
-        self.timeout_entry = ctk.CTkEntry(self.scroll_frame)
-        self.timeout_entry.insert(0, str(self.clicker.no_match_timeout))
-        self.timeout_entry.pack(fill="x", padx=15, pady=(0, 8))
+        # --- Category 3: 경고 및 모니터링 ---
+        self.card_alerts = make_card("⚠️  경고 및 카운터 (Alerts & Monitoring)")
+        self.timeout_entry = make_entry_row(self.card_alerts, "매칭 없음 경고 알림 시간 (0: 끄기)", self.clicker.no_match_timeout, "초")
         self.timeout_entry.bind("<KeyRelease>", self.schedule_save)
         self.timeout_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
-        # Consecutive Match Alert
-        self.consecutive_label = ctk.CTkLabel(self.scroll_frame, text="동일 템플릿 연속 매칭 경고 횟수 (0: 끄기):", anchor="w")
-        self.consecutive_label.pack(fill="x", padx=15)
-        self.consecutive_entry = ctk.CTkEntry(self.scroll_frame)
-        self.consecutive_entry.insert(0, str(getattr(self.clicker, 'consecutive_match_threshold', 0)))
-        self.consecutive_entry.pack(fill="x", padx=15, pady=(0, 8))
+        self.consecutive_entry = make_entry_row(self.card_alerts, "동일 템플릿 연속 매칭 경고 횟수 (0: 끄기)", getattr(self.clicker, 'consecutive_match_threshold', 0), "회")
         self.consecutive_entry.bind("<KeyRelease>", self.schedule_save)
         self.consecutive_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
-        # Reset counts on startup switch
-        self.reset_counts_var = ctk.StringVar(
-            value="on" if getattr(self.clicker, 'reset_counts_on_startup', False) else "off"
-        )
+        self.reset_counts_var = ctk.StringVar(value="on" if getattr(self.clicker, 'reset_counts_on_startup', False) else "off")
         self.reset_counts_switch = ctk.CTkSwitch(
-            self.scroll_frame,
-            text="앱 실행 시 클릭 카운터 자동 초기화 (Reset on Startup)",
+            self.card_alerts,
+            text="앱 실행 시 클릭 카운터 자동 초기화",
             variable=self.reset_counts_var,
             onvalue="on",
             offvalue="off",
+            font=ctk.CTkFont(size=12),
             command=self.save_settings,
         )
-        self.reset_counts_switch.pack(fill="x", padx=15, pady=(0, 10))
+        self.reset_counts_switch.pack(fill="x", padx=14, pady=(2, 10))
 
-        # --- No-Match Action Section ---
-        self.no_match_section_label = ctk.CTkLabel(self.scroll_frame, text="⚡ 매칭 미발생 시 자동 동작 (No-Match Action):", anchor="w", font=ctk.CTkFont(weight="bold"))
-        self.no_match_section_label.pack(fill="x", padx=15, pady=(5, 2))
-
+        # --- Category 4: 미매칭 복구 동작 ---
+        self.card_nomatch = make_card("⚡  미매칭 자동 복구 동작 (Fallback Action)")
+        
         curr_action = getattr(self.clicker, 'no_match_action', 'none')
         curr_label = NO_MATCH_ACTION_MAP.get(curr_action, "사용 안 함 (Disabled)")
+        
+        action_row = ctk.CTkFrame(self.card_nomatch, fg_color="transparent")
+        action_row.pack(fill="x", padx=14, pady=(0, 6))
+        action_lbl = ctk.CTkLabel(action_row, text="수행할 복구 동작:", anchor="w", font=ctk.CTkFont(size=12))
+        action_lbl.pack(side="left", padx=(0, 10))
+        
         self.no_match_combo = ctk.CTkOptionMenu(
-            self.scroll_frame, 
+            action_row, 
             values=list(NO_MATCH_ACTION_MAP.values()),
+            height=28,
+            corner_radius=RADIUS_SM,
             command=self.on_action_changed
         )
         self.no_match_combo.set(curr_label)
-        self.no_match_combo.pack(fill="x", padx=15, pady=(0, 8))
+        self.no_match_combo.pack(side="right", fill="x", expand=True)
 
-        self.no_match_interval_label = ctk.CTkLabel(self.scroll_frame, text="동작 대기 시간 (Action Interval, sec):", anchor="w")
-        self.no_match_interval_label.pack(fill="x", padx=15)
-        self.no_match_interval_entry = ctk.CTkEntry(self.scroll_frame)
-        self.no_match_interval_entry.insert(0, str(getattr(self.clicker, 'no_match_interval', 30)))
-        self.no_match_interval_entry.pack(fill="x", padx=15, pady=(0, 8))
+        self.no_match_interval_entry = make_entry_row(self.card_nomatch, "동작 실행 대기 시간", getattr(self.clicker, 'no_match_interval', 30), "초")
         self.no_match_interval_entry.bind("<KeyRelease>", self.schedule_save)
         self.no_match_interval_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
         # Custom Coordinate Frame (For Custom Click & Custom Double Click)
-        self.coord_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
-        self.coord_frame.pack(fill="x", padx=15, pady=(0, 10))
+        self.coord_frame = ctk.CTkFrame(self.card_nomatch, fg_color="transparent")
+        self.coord_frame.pack(fill="x", padx=14, pady=(0, 10))
 
         coords = getattr(self.clicker, 'no_match_coords', [500, 500])
-        self.coord_x_label = ctk.CTkLabel(self.coord_frame, text="X:")
-        self.coord_x_label.pack(side="left", padx=(0, 3))
-        self.coord_x_entry = ctk.CTkEntry(self.coord_frame, width=70)
+        coord_lbl = ctk.CTkLabel(self.coord_frame, text="클릭 대상 좌표:", anchor="w", font=ctk.CTkFont(size=12))
+        coord_lbl.pack(side="left", padx=(0, 6))
+
+        self.coord_x_label = ctk.CTkLabel(self.coord_frame, text="X:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED)
+        self.coord_x_label.pack(side="left", padx=(0, 2))
+        self.coord_x_entry = ctk.CTkEntry(self.coord_frame, width=55, height=28, corner_radius=RADIUS_SM, justify="center")
         self.coord_x_entry.insert(0, str(coords[0]))
-        self.coord_x_entry.pack(side="left", padx=(0, 10))
+        self.coord_x_entry.pack(side="left", padx=(0, 6))
         self.coord_x_entry.bind("<KeyRelease>", self.schedule_save)
         self.coord_x_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
-        self.coord_y_label = ctk.CTkLabel(self.coord_frame, text="Y:")
-        self.coord_y_label.pack(side="left", padx=(0, 3))
-        self.coord_y_entry = ctk.CTkEntry(self.coord_frame, width=70)
+        self.coord_y_label = ctk.CTkLabel(self.coord_frame, text="Y:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED)
+        self.coord_y_label.pack(side="left", padx=(0, 2))
+        self.coord_y_entry = ctk.CTkEntry(self.coord_frame, width=55, height=28, corner_radius=RADIUS_SM, justify="center")
         self.coord_y_entry.insert(0, str(coords[1]))
-        self.coord_y_entry.pack(side="left", padx=(0, 10))
+        self.coord_y_entry.pack(side="left", padx=(0, 8))
         self.coord_y_entry.bind("<KeyRelease>", self.schedule_save)
         self.coord_y_entry.bind("<FocusOut>", lambda e: self.save_settings())
 
         self.pick_coord_btn = ctk.CTkButton(
             self.coord_frame, 
-            text="🎯 화면에서 좌표 선택", 
-            width=140,
-            height=30,
+            text="🎯 좌표 선택", 
+            width=90,
+            height=28,
             fg_color=COLOR_PRIMARY,
             hover_color=COLOR_PRIMARY_HOVER,
             corner_radius=RADIUS_SM,
@@ -538,7 +561,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
         # Footer Frame (Fixed Bottom)
         self.footer_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.footer_frame.pack(fill="x", padx=20, pady=(5, 12))
+        self.footer_frame.pack(fill="x", padx=16, pady=(6, 12))
 
         self.license_btn = ctk.CTkButton(
             self.footer_frame,
@@ -574,7 +597,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def update_coord_frame_visibility(self, action_key):
         if action_key in ("custom_click", "custom_double_click"):
-            self.coord_frame.pack(fill="x", padx=30, pady=(0, 10))
+            self.coord_frame.pack(fill="x", padx=14, pady=(0, 10))
         else:
             self.coord_frame.pack_forget()
 
