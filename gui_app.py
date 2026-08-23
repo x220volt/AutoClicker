@@ -157,53 +157,21 @@ class CTKContextMenu:
         if not (wx <= x <= wx + ww and wy <= y <= wy + wh):
             CTKContextMenu.close_active()
 
-    def add_command(self, icon, label, command, is_danger=False):
-        row = ctk.CTkFrame(
+    def add_command(self, label, command, is_danger=False):
+        btn = ctk.CTkButton(
             self.frame,
-            fg_color="transparent",
-            corner_radius=RADIUS_SM,
-            height=32,
-            cursor="hand2"
-        )
-        row.pack(fill="x", padx=4, pady=1)
-
-        text_col = "#F87171" if is_danger else COLOR_TEXT_PRIMARY
-        hover_col = COLOR_DANGER if is_danger else COLOR_PRIMARY
-
-        icon_lbl = ctk.CTkLabel(
-            row,
-            text=icon,
-            width=24,
-            anchor="center",
-            font=ctk.CTkFont(size=12),
-            text_color=text_col
-        )
-        icon_lbl.pack(side="left", padx=(6, 4), pady=4)
-
-        text_lbl = ctk.CTkLabel(
-            row,
             text=label,
             anchor="w",
+            height=30,
+            width=180,
             font=ctk.CTkFont(size=12, weight="bold" if is_danger else "normal"),
-            text_color=text_col
+            fg_color="transparent",
+            text_color="#F87171" if is_danger else COLOR_TEXT_PRIMARY,
+            hover_color=COLOR_DANGER if is_danger else COLOR_PRIMARY,
+            corner_radius=RADIUS_SM,
+            command=lambda: self._execute(command),
         )
-        text_lbl.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=4)
-
-        def on_enter(e):
-            if row.winfo_exists():
-                row.configure(fg_color=hover_col)
-
-        def on_leave(e):
-            if row.winfo_exists():
-                row.configure(fg_color="transparent")
-
-        def on_click(e=None):
-            self._execute(command)
-
-        for widget in (row, icon_lbl, text_lbl):
-            widget.bind("<Enter>", on_enter)
-            widget.bind("<Leave>", on_leave)
-            widget.bind("<Button-1>", on_click)
+        btn.pack(fill="x", padx=6, pady=2)
 
     def add_separator(self):
         sep = ctk.CTkFrame(self.frame, height=1, fg_color="#374151")
@@ -2346,20 +2314,20 @@ class InstanceTabFrame(ctk.CTkFrame):
             TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
             menu = CTKContextMenu(self)
             menu.add_command(
-                "✏️", "이름 변경 (Rename)",
+                "이름 변경 (Rename)",
                 lambda f=filename, fb=is_fallback: RenameTemplateWindow(self, f, fb),
             )
             menu.add_command(
-                "🎯", "즉시 실행 (Run Now)",
+                "즉시 실행 (Run Now)",
                 lambda f=filename, fb=is_fallback: self.on_template_double_click(f, fb),
             )
             menu.add_command(
-                "⏱️", "지연 시간 설정 (Set Delay)",
+                "지연 시간 설정 (Set Delay)",
                 lambda f=filename, fb=is_fallback: (self.set_fallback_template_delay_event(f) if fb else self.set_template_delay_event(f)),
             )
             menu.add_separator()
             menu.add_command(
-                "🗑️", "템플릿 삭제 (Delete)",
+                "템플릿 삭제 (Delete)",
                 lambda f=filename, fb=is_fallback: (self.delete_fallback_template_event(f) if fb else self.delete_template_event(f)),
                 is_danger=True,
             )
