@@ -600,6 +600,105 @@ class SettingsWindow(ctk.CTkToplevel):
         except Exception:
             pass
         self.destroy()
+
+
+class RenameTemplateWindow(ctk.CTkToplevel):
+    """Dialog for renaming a template filename."""
+    def __init__(self, parent_frame, filename, is_fallback=False):
+        super().__init__(parent_frame)
+        self.parent_frame = parent_frame
+        self.old_filename = filename
+        self.is_fallback = is_fallback
+        self.title("✏️ 템플릿 이름 변경 (Rename)")
+        self.geometry("380x210")
+        self.resizable(False, False)
+        self.transient(parent_frame.winfo_toplevel())
+        self.grab_set()
+
+        target_type = "미매칭 복구" if is_fallback else "기본"
+        self.header_label = ctk.CTkLabel(
+            self,
+            text=f"✏️ [{target_type}] 템플릿 이름 변경",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.header_label.pack(pady=(15, 4))
+
+        self.info_label = ctk.CTkLabel(
+            self,
+            text=f"현재 이름: {filename}",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        self.info_label.pack(pady=(0, 8))
+
+        self.entry_label = ctk.CTkLabel(self, text="새 파일명 (New Name):", anchor="w")
+        self.entry_label.pack(fill="x", padx=30, pady=(0, 2))
+
+        base_name = filename[:-4] if filename.lower().endswith(".png") else filename
+        self.name_entry = ctk.CTkEntry(self, placeholder_text="새 템플릿 파일명 입력")
+        self.name_entry.insert(0, base_name)
+        self.name_entry.pack(fill="x", padx=30, pady=(0, 15))
+        self.name_entry.select_range(0, "end")
+        self.name_entry.focus()
+
+        self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.btn_frame.pack(fill="x", padx=30)
+
+        self.confirm_btn = ctk.CTkButton(
+            self.btn_frame,
+            text="변경 (Rename)",
+            command=self.confirm_rename,
+            width=150,
+            fg_color="#2ECC71",
+            hover_color="#27AE60",
+            text_color="black",
+            font=ctk.CTkFont(weight="bold")
+        )
+        self.confirm_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        self.cancel_btn = ctk.CTkButton(
+            self.btn_frame,
+            text="취소 (Cancel)",
+            command=self.close_window,
+            width=150,
+            fg_color="#7F8C8D",
+            hover_color="#95A5A6"
+        )
+        self.cancel_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
+
+        self.bind("<Return>", lambda e: self.confirm_rename())
+        self.bind("<Escape>", lambda e: self.close_window())
+        self.protocol("WM_DELETE_WINDOW", self.close_window)
+
+    def close_window(self):
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+
+    def confirm_rename(self):
+        new_name = self.name_entry.get().strip()
+        if not new_name:
+            from tkinter import messagebox
+            messagebox.showwarning("입력 오류", "변경할 템플릿 파일명을 입력해주세요.", parent=self)
+            return
+
+        if self.is_fallback:
+            success, msg = self.parent_frame.clicker.rename_fallback_template(self.old_filename, new_name)
+        else:
+            success, msg = self.parent_frame.clicker.rename_template(self.old_filename, new_name)
+
+        if success:
+            TemplatePreviewTooltip.get_instance(self.parent_frame.winfo_toplevel()).hide()
+            self.parent_frame.app_owner.refresh_all_tabs_templates()
+            self.parent_frame.log_message(f"템플릿 이름이 변경되었습니다: '{self.old_filename}' -> '{msg}'")
+            self.close_window()
+        else:
+            from tkinter import messagebox
+            messagebox.showerror("이름 변경 실패", msg, parent=self)
+
+
 class TemplateDelayWindow(ctk.CTkToplevel):
     """Dialog for setting pre-action or post-action delay for a template."""
     def __init__(self, parent_frame, filename, is_fallback=False):
@@ -1840,7 +1939,37 @@ class InstanceTabFrame(ctk.CTkFrame):
             tooltip = TemplatePreviewTooltip.get_instance(self.winfo_toplevel())
             tooltip.cancel()
 
-        # 이벤트 바인딩 최소화 (필요한 요소에만 정밀 바인딩)
+        # Right-click Context Menu (우클릭 컨텍스트 메뉴)
+        def show_context_menu(event):
+            TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
+            menu = tk.Menu(self, tearoff=0, bg="#2B2B2B", fg="white", activebackground="#1F538D", activeforeground="white", relief="flat")
+            menu.add_command(
+                label=f"✏️ 이름 변경 (Rename)",
+                command=lambda f=filename, fb=is_fallback: RenameTemplateWindow(self, f, fb)
+            )
+            menu.add_command(
+                label="🎯 즉시 실행 (Run Now)",
+                command=lambda f=filename, fb=is_fallback: self.on_template_double_click(f, fb)
+            )
+            menu.add_command(
+                label="⏱️ 지연 시간 설정 (Set Delay)",
+                command=lambda f=filename, fb=is_fallback: (self.set_fallback_template_delay_event(f) if fb else self.set_template_delay_event(f))
+            )
+            menu.add_separator()
+            menu.add_command(
+                label="🗑️ 템플릿 삭제 (Delete)",
+                command=lambda f=filename, fb=is_fallback: (self.delete_fallback_template_event(f) if fb else self.delete_template_event(f))
+            )
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        for target in (row_frame, label, priority_label, drag_handle):
+            target.bind("<Button-3>", show_context_menu)
+            target.bind("<Button-2>", show_context_menu)
+
+        # 이벤트 바인딩
         drag_handle.bind("<ButtonPress-1>", lambda e, f=filename, fb=is_fallback: self.on_drag_start(e, f, fb))
         drag_handle.bind("<B1-Motion>", self.on_drag_motion)
         drag_handle.bind("<ButtonRelease-1>", self.on_drag_end)

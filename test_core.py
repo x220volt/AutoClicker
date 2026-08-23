@@ -2421,6 +2421,85 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         clicker.reset_counts()
         self.assertEqual(clicker.template_counts.get("test.png"), 0)
 
+    def test_rename_template_success(self):
+        template_path = Path(self.temp_dir, "templates", "old_btn.png")
+        self._write_png(template_path, self._pattern())
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="127.0.0.1:5555",
+            logger=lambda _: None,
+        )
+        clicker.template_order = ["old_btn.png"]
+        clicker.template_counts = {"old_btn.png": 15}
+        clicker.template_actions = {"old_btn.png": "double_click"}
+        clicker.template_offsets = {"old_btn.png": [10, 20]}
+        clicker.template_delays = {"old_btn.png": 1.5}
+        clicker.template_delay_types = {"old_btn.png": "post"}
+        clicker.template_rois = {"old_btn.png": [0.1, 0.2, 0.3, 0.4]}
+
+        success, new_name = clicker.rename_template("old_btn.png", "new_btn")
+        self.assertTrue(success)
+        self.assertEqual(new_name, "new_btn.png")
+        self.assertFalse(os.path.exists(str(template_path)))
+        self.assertTrue(os.path.exists(os.path.join(self.temp_dir, "templates", "new_btn.png")))
+
+        self.assertEqual(clicker.template_order, ["new_btn.png"])
+        self.assertEqual(clicker.template_counts["new_btn.png"], 15)
+        self.assertEqual(clicker.template_actions["new_btn.png"], "double_click")
+        self.assertEqual(clicker.template_offsets["new_btn.png"], [10, 20])
+        self.assertEqual(clicker.template_delays["new_btn.png"], 1.5)
+        self.assertEqual(clicker.template_delay_types["new_btn.png"], "post")
+        self.assertEqual(clicker.template_rois["new_btn.png"], [0.1, 0.2, 0.3, 0.4])
+
+    def test_rename_fallback_template_success(self):
+        template_path = Path(self.temp_dir, "fallback_templates", "fb_old.png")
+        self._write_png(template_path, self._pattern())
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="127.0.0.1:5555",
+            logger=lambda _: None,
+        )
+        clicker.fallback_template_order = ["fb_old.png"]
+        clicker.fallback_template_counts = {"fb_old.png": 3}
+        clicker.fallback_template_actions = {"fb_old.png": "back"}
+
+        success, new_name = clicker.rename_fallback_template("fb_old.png", "fb_new.png")
+        self.assertTrue(success)
+        self.assertEqual(new_name, "fb_new.png")
+        self.assertTrue(os.path.exists(os.path.join(self.temp_dir, "fallback_templates", "fb_new.png")))
+        self.assertEqual(clicker.fallback_template_order, ["fb_new.png"])
+        self.assertEqual(clicker.fallback_template_counts["fb_new.png"], 3)
+        self.assertEqual(clicker.fallback_template_actions["fb_new.png"], "back")
+
+    def test_rename_template_validation(self):
+        t1 = Path(self.temp_dir, "templates", "btn1.png")
+        t2 = Path(self.temp_dir, "templates", "btn2.png")
+        self._write_png(t1, self._pattern())
+        self._write_png(t2, self._pattern())
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            device_address="127.0.0.1:5555",
+            logger=lambda _: None,
+        )
+        # Duplicate name
+        success, msg = clicker.rename_template("btn1.png", "btn2.png")
+        self.assertFalse(success)
+        self.assertIn("이미 존재합니다", msg)
+
+        # Invalid character
+        success, msg = clicker.rename_template("btn1.png", "bad:name.png")
+        self.assertFalse(success)
+        self.assertIn("특수문자", msg)
+
+        # Empty name
+        success, msg = clicker.rename_template("btn1.png", "   ")
+        self.assertFalse(success)
+
+        # Same name (no-op success)
+        success, msg = clicker.rename_template("btn1.png", "btn1.png")
+        self.assertTrue(success)
+
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -1439,6 +1439,116 @@ class TeraboxClicker:
             "fallback_template_counts",
         )
 
+    def _rename_template(
+        self,
+        old_filename,
+        new_filename,
+        directory,
+        order,
+        counts,
+        actions,
+        offsets,
+        delays,
+        delay_types,
+        rois,
+        counts_key,
+    ):
+        if not isinstance(old_filename, str) or os.path.basename(old_filename) != old_filename:
+            self.log(f"잘못된 기존 템플릿 파일명: {old_filename}")
+            return False, "잘못된 기존 템플릿 파일명입니다."
+        if not isinstance(new_filename, str) or not new_filename.strip():
+            self.log("변경할 파일명을 입력해주세요.")
+            return False, "변경할 파일명을 입력해주세요."
+
+        new_filename = new_filename.strip()
+        if not new_filename.lower().endswith(".png"):
+            new_filename += ".png"
+
+        if os.path.basename(new_filename) != new_filename:
+            self.log(f"유효하지 않은 파일명 형식입니다: {new_filename}")
+            return False, "유효하지 않은 파일명 형식입니다."
+
+        invalid_chars = '<>:"/\\|?*'
+        if any(c in new_filename for c in invalid_chars):
+            self.log(f"파일명에 사용할 수 없는 문자가 포함되어 있습니다: {new_filename}")
+            return False, "파일명에 사용할 수 없는 특수문자(<>:\"/\\|?*)가 포함되어 있습니다."
+
+        if old_filename == new_filename:
+            return True, new_filename
+
+        old_path = os.path.join(directory, old_filename)
+        new_path = os.path.join(directory, new_filename)
+
+        if os.path.exists(new_path):
+            self.log(f"동일한 이름의 템플릿 파일이 이미 존재합니다: {new_filename}")
+            return False, f"'{new_filename}' 파일이 이미 존재합니다."
+
+        try:
+            if os.path.exists(old_path):
+                os.rename(old_path, new_path)
+                self.log(f"템플릿 파일명 변경됨: {old_filename} -> {new_filename}")
+            else:
+                self.log(f"기존 템플릿 파일이 존재하지 않습니다: {old_filename}")
+
+            if old_filename in order:
+                idx = order.index(old_filename)
+                order[idx] = new_filename
+
+            if old_filename in counts:
+                counts[new_filename] = counts.pop(old_filename)
+            if old_filename in actions:
+                actions[new_filename] = actions.pop(old_filename)
+            if old_filename in offsets:
+                offsets[new_filename] = offsets.pop(old_filename)
+            if old_filename in delays:
+                delays[new_filename] = delays.pop(old_filename)
+            if old_filename in delay_types:
+                delay_types[new_filename] = delay_types.pop(old_filename)
+            if old_filename in rois:
+                rois[new_filename] = rois.pop(old_filename)
+
+            self._discard_location_hint(old_path)
+            self._discard_location_hint(new_path)
+            self._remove_count_state(old_filename, counts_key)
+            self.invalidate_template_cache(old_path)
+            self.invalidate_template_cache(new_path)
+
+            self.save_config(include_templates=True)
+            return True, new_filename
+        except OSError as error:
+            self.log(f"이름 변경 실패 ({old_filename} -> {new_filename}): {error}")
+            return False, f"이름 변경 실패: {error}"
+
+    def rename_template(self, old_filename, new_filename):
+        return self._rename_template(
+            old_filename,
+            new_filename,
+            self.template_dir,
+            self.template_order,
+            self.template_counts,
+            self.template_actions,
+            self.template_offsets,
+            self.template_delays,
+            self.template_delay_types,
+            self.template_rois,
+            "template_counts",
+        )
+
+    def rename_fallback_template(self, old_filename, new_filename):
+        return self._rename_template(
+            old_filename,
+            new_filename,
+            self.fallback_template_dir,
+            self.fallback_template_order,
+            self.fallback_template_counts,
+            self.fallback_template_actions,
+            self.fallback_template_offsets,
+            self.fallback_template_delays,
+            self.fallback_template_delay_types,
+            self.fallback_template_rois,
+            "fallback_template_counts",
+        )
+
     def _reset_counts(self, counts_key, order, counts):
         path_key = os.path.abspath(self.config_path)
         with self._config_lock:
