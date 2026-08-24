@@ -61,22 +61,15 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Prepare version-tagged release binary
-        shell: pwsh
-        run: |
-          $tag = "${{ steps.get_tag.outputs.tag }}"
-          Copy-Item "dist/TeraboxClicker.exe" -Destination "dist/TeraboxClicker-$tag.exe"
-
       - name: Create GitHub Release and Upload Binary
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get_tag.outputs.tag }}
           name: ${{ steps.get_tag.outputs.tag }}
-          files: |
-            dist/TeraboxClicker.exe
-            dist/TeraboxClicker-${{ steps.get_tag.outputs.tag }}.exe
+          files: dist/TeraboxClicker.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
 
