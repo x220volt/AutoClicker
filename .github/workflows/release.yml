@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v0.3.10)'
+        description: 'Release Tag (e.g. v0.3.11)'
         required: true
-        default: 'v0.3.10'
+        default: 'v0.3.11'
 
 jobs:
   build:
@@ -44,6 +44,13 @@ jobs:
         run: |
           pyinstaller --noconfirm TeraboxClicker.spec
 
+      - name: Verify executable layout
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist/TeraboxClicker.exe")) {
+            throw "Executable dist/TeraboxClicker.exe was not created."
+          }
+
       - name: Determine Release Tag
         id: get_tag
         shell: bash
@@ -63,3 +70,4 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

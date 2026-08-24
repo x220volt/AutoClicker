@@ -20,6 +20,7 @@ import json
 import math
 import os
 import random
+import shutil
 import socket
 import struct
 import subprocess
@@ -42,6 +43,10 @@ FALLBACK_TEMPLATE_DIR_NAME = "fallback_templates"
 COUNT_FLUSH_INTERVAL = 5.0
 TEMPLATE_MANIFEST_REFRESH_INTERVAL = 1.0
 ADB_COMMAND_TIMEOUT = 10.0
+ADB_SERVER_PROBE_TIMEOUT = 0.35
+ADB_SERVER_START_ATTEMPTS = 3
+ADB_SERVER_RETRY_DELAYS = (0.15, 0.35)
+ADB_VERSION_TIMEOUT = 5.0
 PRESCALE_FACTOR = 0.5
 PRESCALE_MIN_TEMPLATE_DIM = 20
 LOCAL_VERIFY_MARGIN = 12
@@ -54,6 +59,9 @@ ROI_PRIORITY_TEMPLATE_COUNT = 3
 DEFAULT_MAX_IDLE_INTERVAL = 5.0
 DEFAULT_CAPTURE_BACKEND = "auto"
 VALID_CAPTURE_BACKENDS = {"auto", "png", "raw"}
+DEFAULT_ADB_MODE = "bundled"
+DEFAULT_CUSTOM_ADB_PATH = ""
+VALID_ADB_MODES = {"bundled", "custom"}
 
 
 def get_app_dir():
@@ -74,6 +82,13 @@ def get_default_adb_path(base_dir=None):
     if os.path.exists(local_adb):
         return local_adb
     return "adb.exe"
+
+
+def resolve_adb_path(adb_mode=DEFAULT_ADB_MODE, custom_adb_path="", base_dir=None):
+    """Return the executable path based on ADB mode ('bundled' vs 'custom')."""
+    if adb_mode == "custom" and custom_adb_path and str(custom_adb_path).strip():
+        return os.path.expandvars(os.path.expanduser(str(custom_adb_path).strip()))
+    return get_default_adb_path(base_dir)
 
 
 ADB_HOST = "127.0.0.1"
@@ -124,6 +139,12 @@ class TeraboxClicker:
     _config_cache_mtime = {}
     _save_debounce_timers = {}
 
+    # ADB is one process-wide service per host/port. Per-instance locks cannot
+    # protect a cold start when the GUI connects several tabs at once.
+    _adb_server_locks_guard = threading.Lock()
+    _adb_server_locks = {}
+    _adb_validation_lock = threading.Lock()
+    _adb_validation_cache = {}
     def __init__(
         self,
         adb_path=None,
@@ -151,9 +172,19 @@ class TeraboxClicker:
         consecutive_match_threshold=None,
         on_consecutive_match_callback=None,
         reset_counts_on_startup=None,
+        adb_mode=None,
+        custom_adb_path=None,
     ):
         self.base_dir = os.path.abspath(base_dir or APP_DIR)
-        self.adb_path = adb_path or get_default_adb_path(self.base_dir)
+        self.adb_mode = adb_mode if adb_mode in VALID_ADB_MODES else DEFAULT_ADB_MODE
+        self.custom_adb_path = str(custom_adb_path or "").strip()
+        self._adb_path_explicit = adb_path is not None
+        if self._adb_path_explicit:
+            self.adb_path = adb_path
+        else:
+            self.adb_path = resolve_adb_path(
+                self.adb_mode, self.custom_adb_path, self.base_dir
+            )
         self.host = host
         self.port = port
         self._device_address_explicit = device_address is not None
@@ -963,6 +994,22 @@ class TeraboxClicker:
             getattr(self, "reset_counts_on_startup", DEFAULT_RESET_COUNTS_ON_STARTUP),
         )
 
+        adb_mode_val = source.get("adb_mode")
+        if adb_mode_val in VALID_ADB_MODES:
+            self.adb_mode = adb_mode_val
+        elif "adb_mode" in source and isinstance(adb_mode_val, str):
+            cleaned_mode = adb_mode_val.strip().lower()
+            if cleaned_mode in VALID_ADB_MODES:
+                self.adb_mode = cleaned_mode
+
+        if "custom_adb_path" in source and source["custom_adb_path"] is not None:
+            self.custom_adb_path = str(source["custom_adb_path"]).strip()
+
+        if not getattr(self, "_adb_path_explicit", False):
+            self.adb_path = resolve_adb_path(
+                self.adb_mode, self.custom_adb_path, self.base_dir
+            )
+
     @staticmethod
     def _sync_order(saved_order, current_files):
         current_set = set(current_files)
@@ -1270,7 +1317,10 @@ class TeraboxClicker:
             self._roi_full_scan_frame_active = False
             self._roi_screen_shape = None
 
-        self.adb_path = get_default_adb_path(self.base_dir)
+        if not getattr(self, "_adb_path_explicit", False):
+            self.adb_path = resolve_adb_path(
+                self.adb_mode, self.custom_adb_path, self.base_dir
+            )
         self._remember_template_directory_generations()
         return True
 
@@ -1279,6 +1329,8 @@ class TeraboxClicker:
         self.random_click_interval = self.no_match_interval
         return {
             "device_address": self.device_address,
+            "adb_mode": getattr(self, "adb_mode", DEFAULT_ADB_MODE),
+            "custom_adb_path": getattr(self, "custom_adb_path", DEFAULT_CUSTOM_ADB_PATH),
             "scan_interval": self.scan_interval,
             "no_match_timeout": self.no_match_timeout,
             "similarity_threshold": self.similarity_threshold,
@@ -2441,7 +2493,7 @@ class TeraboxClicker:
         if (
             "start-server" not in args
             and self.host
-            and str(self.host).strip() not in ("127.0.0.1", "localhost")
+            and str(self.host).strip().lower() not in ("127.0.0.1", "localhost")
         ):
             cmd.extend(["-H", str(self.host)])
         if self.port:
@@ -2457,6 +2509,216 @@ class TeraboxClicker:
             timeout=timeout,
             **self._subprocess_kwargs(),
         )
+
+    @classmethod
+    def validate_adb_executable(cls, adb_path, timeout=ADB_VERSION_TIMEOUT):
+        """Validate an ADB executable without starting or contacting a server."""
+        raw_path = os.path.expandvars(os.path.expanduser(str(adb_path or "").strip()))
+        if not raw_path:
+            return False, raw_path, "ADB 실행 파일 경로가 비어 있습니다."
+
+        resolved_path = raw_path
+        if not os.path.isabs(resolved_path) and not os.path.dirname(resolved_path):
+            resolved_path = shutil.which(resolved_path) or resolved_path
+        resolved_path = os.path.abspath(resolved_path)
+        if not os.path.isfile(resolved_path):
+            return False, resolved_path, f"ADB 실행 파일을 찾을 수 없습니다: {resolved_path}"
+
+        try:
+            stat = os.stat(resolved_path)
+            signature = (stat.st_mtime_ns, stat.st_size)
+        except OSError as error:
+            return False, resolved_path, f"ADB 실행 파일을 확인할 수 없습니다: {error}"
+
+        cache_key = os.path.normcase(resolved_path)
+        with cls._adb_validation_lock:
+            cached = cls._adb_validation_cache.get(cache_key)
+            if cached and cached[0] == signature:
+                return cached[1], resolved_path, cached[2]
+
+        try:
+            result = subprocess.run(
+                [resolved_path, "version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                **cls._subprocess_kwargs(),
+            )
+            output = "\n".join(
+                part.strip()
+                for part in (result.stdout, result.stderr)
+                if part and part.strip()
+            )
+            valid = result.returncode == 0 and "Android Debug Bridge" in output
+            message = (
+                output.splitlines()[0]
+                if valid and output
+                else f"유효한 adb.exe가 아닙니다 (exit={result.returncode}): "
+                f"{output or '출력 없음'}"
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            valid = False
+            message = f"ADB 버전 확인 실패: {error}"
+
+        with cls._adb_validation_lock:
+            cls._adb_validation_cache[cache_key] = (signature, valid, message)
+        return valid, resolved_path, message
+
+    @classmethod
+    def _get_adb_server_lock(cls, host, port):
+        normalized_host = str(host or "127.0.0.1").strip().lower()
+        if normalized_host in ("", "localhost"):
+            normalized_host = "127.0.0.1"
+        endpoint = (normalized_host, int(port or ADB_PORT))
+        with cls._adb_server_locks_guard:
+            return cls._adb_server_locks.setdefault(endpoint, threading.RLock())
+
+    @staticmethod
+    def _recv_adb_exact(sock, length):
+        chunks = []
+        remaining = int(length)
+        while remaining > 0:
+            chunk = sock.recv(remaining)
+            if not chunk:
+                raise ConnectionError("ADB 서버가 응답 도중 연결을 종료했습니다.")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _probe_adb_server(self, timeout=ADB_SERVER_PROBE_TIMEOUT):
+        """Verify that host/port speaks the ADB host protocol, not just TCP."""
+        host = str(self.host or "127.0.0.1").strip()
+        port = int(self.port or ADB_PORT)
+        request = b"host:version"
+        framed = f"{len(request):04x}".encode("ascii") + request
+        try:
+            with socket.create_connection((host, port), timeout=timeout) as sock:
+                sock.settimeout(timeout)
+                sock.sendall(framed)
+                if self._recv_adb_exact(sock, 4) != b"OKAY":
+                    return False
+                length = int(self._recv_adb_exact(sock, 4), 16)
+                self._recv_adb_exact(sock, length)
+                return True
+        except (OSError, ValueError, ConnectionError):
+            return False
+
+    @staticmethod
+    def _adb_output_text(value):
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace").strip()
+        return str(value).strip()
+
+    def _log_adb_stage_failure(self, stage, result=None, error=None):
+        details = []
+        if result is not None:
+            details.append(f"exit={getattr(result, 'returncode', '?')}")
+        if error is not None:
+            details.append(str(error))
+        source = result if result is not None else error
+        for label, value in (
+            ("stderr", getattr(source, "stderr", None)),
+            ("stdout", getattr(source, "stdout", None)),
+        ):
+            output = self._adb_output_text(value)
+            if output:
+                details.append(f"{label}={output[:2000]}")
+        self.log(f"ADB {stage} 실패: {' | '.join(details) or '원인 정보 없음'}")
+
+    def _run_adb_stage(self, stage, args, timeout=ADB_COMMAND_TIMEOUT):
+        try:
+            result = self._run_adb(args, timeout=timeout, check=False)
+        except (OSError, subprocess.SubprocessError) as error:
+            self._log_adb_stage_failure(stage, error=error)
+            return None
+        if result.returncode != 0:
+            self._log_adb_stage_failure(stage, result=result)
+            return None
+        return result
+
+    @staticmethod
+    def _adb_connect_output_failed(result):
+        output = " ".join(
+            str(part or "")
+            for part in (getattr(result, "stdout", ""), getattr(result, "stderr", ""))
+        ).lower()
+        return any(
+            marker in output
+            for marker in (
+                "failed to connect",
+                "cannot connect",
+                "connection refused",
+                "연결할 수",
+            )
+        )
+
+    def _ensure_adb_server(self):
+        """Start the process-wide ADB server once and recover cold-start races."""
+        path_requires_validation = (
+            self.adb_mode == "custom"
+            or os.path.isabs(str(self.adb_path))
+            or bool(os.path.dirname(str(self.adb_path)))
+        )
+        if path_requires_validation:
+            valid, resolved_path, message = self.validate_adb_executable(self.adb_path)
+            if not valid:
+                self.log(f"ADB 실행 파일 검증 실패: {message}")
+                return False
+            self.adb_path = resolved_path
+
+        host = str(self.host or "127.0.0.1").strip().lower()
+        server_lock = self._get_adb_server_lock(host, self.port)
+        with server_lock:
+            if self._operation_cancelled():
+                return False
+            if self._probe_adb_server():
+                return True
+            if host not in ("127.0.0.1", "localhost"):
+                self.log(f"원격 ADB 서버에 연결할 수 없습니다: {self.host}:{self.port}")
+                return False
+
+            for attempt in range(1, ADB_SERVER_START_ATTEMPTS + 1):
+                if self._operation_cancelled():
+                    return False
+                self.log(
+                    f"ADB 서버 시작 시도 ({attempt}/{ADB_SERVER_START_ATTEMPTS}): "
+                    f"{self.adb_path}"
+                )
+                try:
+                    result = self._run_adb(["start-server"], check=False)
+                except (OSError, subprocess.SubprocessError) as error:
+                    result = None
+                    self._log_adb_stage_failure("서버 시작", error=error)
+                else:
+                    if result.returncode != 0:
+                        self._log_adb_stage_failure("서버 시작", result=result)
+
+                if self._operation_cancelled():
+                    return False
+                start_command_succeeded = (
+                    result is not None and result.returncode == 0
+                )
+                if start_command_succeeded and self._probe_adb_server():
+                    return True
+
+                delay = ADB_SERVER_RETRY_DELAYS[
+                    min(attempt - 1, len(ADB_SERVER_RETRY_DELAYS) - 1)
+                ]
+                time.sleep(delay)
+                if self._probe_adb_server():
+                    if start_command_succeeded:
+                        self.log("시작한 ADB 서버의 프로토콜 응답을 확인했습니다.")
+                    else:
+                        self.log("다른 스레드/프로세스가 시작한 ADB 서버를 확인했습니다.")
+                    return True
+
+            self.log("ADB 서버 시작 재시도 한도를 초과했습니다.")
+            return False
 
     @staticmethod
     def normalize_device_serials(devices):
@@ -2513,10 +2775,7 @@ class TeraboxClicker:
 
     def get_connected_devices(self):
         """Return online ADB serials after fast, socket-probed parallel emulator connection."""
-        try:
-            self._run_adb(["start-server"], check=True)
-        except (OSError, subprocess.SubprocessError) as error:
-            self.log(f"ADB 서버 시작 실패: {error}")
+        if not self._ensure_adb_server():
             return []
 
         # Comprehensive emulator ports (LDPlayer, BlueStacks, Nox, MuMu, MEmu, etc.)
@@ -2543,19 +2802,22 @@ class TeraboxClicker:
 
         # 2. Connect only to active listening ports
         def connect_port(port):
-            try:
-                self._run_adb(["connect", f"127.0.0.1:{port}"], timeout=1.0)
-            except (OSError, subprocess.SubprocessError):
-                pass
+            address = f"127.0.0.1:{port}"
+            result = self._run_adb_stage(
+                f"디바이스 연결 ({address})",
+                ["connect", address],
+                timeout=1.0,
+            )
+            if result is not None and self._adb_connect_output_failed(result):
+                output = self._adb_output_text(result.stdout or result.stderr)
+                self.log(f"ADB 디바이스 연결 실패 ({address}): {output}")
 
         if open_ports:
             with ThreadPoolExecutor(max_workers=min(16, len(open_ports))) as executor:
                 list(executor.map(connect_port, open_ports))
 
-        try:
-            result = self._run_adb(["devices"], check=True)
-        except (OSError, subprocess.SubprocessError) as error:
-            self.log(f"디바이스 목록 가져오기 실패: {error}")
+        result = self._run_adb_stage("디바이스 목록 조회", ["devices"])
+        if result is None:
             return []
 
         devices = []
@@ -2573,19 +2835,36 @@ class TeraboxClicker:
     def start_adb_server(self):
         """Start ADB and bind only to a device confirmed by adb devices."""
         with self._device_lock:
-            self.log(f"ADB 서버 시작 시도: {self.adb_path}")
+            self.log(f"ADB 연결 준비: {self.adb_path}")
             try:
-                self._run_adb(["start-server"], check=True)
+                if not self._ensure_adb_server():
+                    self.client = None
+                    self.device = None
+                    return False
                 if self._operation_cancelled():
                     return False
                 if ":" in self.device_address:
-                    self._run_adb(
-                        ["connect", self.device_address], timeout=3.0
+                    connect_result = self._run_adb_stage(
+                        f"디바이스 연결 ({self.device_address})",
+                        ["connect", self.device_address],
+                        timeout=3.0,
                     )
+                    if (
+                        connect_result is not None
+                        and self._adb_connect_output_failed(connect_result)
+                    ):
+                        output = self._adb_output_text(
+                            connect_result.stdout or connect_result.stderr
+                        )
+                        self.log(
+                            f"ADB 디바이스 연결 실패 ({self.device_address}): {output}"
+                        )
                     if self._operation_cancelled():
                         return False
 
-                result = self._run_adb(["devices"], check=True)
+                result = self._run_adb_stage("디바이스 목록 조회", ["devices"])
+                if result is None:
+                    return False
                 if self._operation_cancelled():
                     return False
                 online_serials = {
@@ -2633,12 +2912,12 @@ class TeraboxClicker:
             except (OSError, subprocess.SubprocessError, RuntimeError) as error:
                 self.client = None
                 self.device = None
-                self.log(f"ADB 서버 시작 중 오류 발생: {error}")
+                self.log(f"ADB 연결 처리 중 예기치 않은 오류: {error}")
                 return False
             except Exception as error:
                 self.client = None
                 self.device = None
-                self.log(f"ADB 연결 확인 중 오류 발생: {error}")
+                self.log(f"ADB 클라이언트 초기화/장치 확인 오류: {error}")
                 return False
 
     def disconnect(self):

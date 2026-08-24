@@ -1,8 +1,10 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import socket
 import struct
 import tempfile
 import threading
@@ -19,6 +21,9 @@ from main import (
     DEFAULT_SIMILARITY_THRESHOLD,
     TEMPLATE_MANIFEST_REFRESH_INTERVAL,
     TeraboxClicker,
+    resolve_adb_path,
+    get_default_adb_path,
+    DEFAULT_ADB_MODE,
 )
 from cropping_tool import normalize_filename, save_template
 
@@ -2130,6 +2135,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             logger=lambda _: None,
         )
         clicker._automatic_loop_active = True
+        clicker._probe_adb_server = Mock(return_value=False)
         calls = []
 
         def run_adb(args, **kwargs):
@@ -2402,6 +2408,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             logger=lambda _: None,
         )
         cancel_event = threading.Event()
+        clicker._probe_adb_server = Mock(return_value=False)
         calls = []
 
         def run_adb(args, **kwargs):
@@ -2865,8 +2872,195 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             bg_frame.check_tab_warning_status.assert_called_once()
             bg_frame.update_timer_display.assert_called_once()
 
+    def test_resolve_adb_path_bundled_and_custom(self):
+        default_path = get_default_adb_path(self.temp_dir)
+        self.assertEqual(
+            resolve_adb_path("bundled", base_dir=self.temp_dir), default_path
+        )
+        self.assertEqual(
+            resolve_adb_path("custom", "C:\\custom\\adb.exe", base_dir=self.temp_dir),
+            "C:\\custom\\adb.exe",
+        )
+        self.assertEqual(
+            resolve_adb_path("custom", "", base_dir=self.temp_dir), default_path
+        )
+        self.assertEqual(
+            resolve_adb_path("custom", "   ", base_dir=self.temp_dir), default_path
+        )
+
+    def test_terabox_clicker_adb_mode_custom_and_config_persistence(self):
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            adb_mode="custom",
+            custom_adb_path="D:\\tools\\adb.exe",
+            logger=lambda _: None,
+        )
+        self.assertEqual(clicker.adb_mode, "custom")
+        self.assertEqual(clicker.custom_adb_path, "D:\\tools\\adb.exe")
+        self.assertEqual(clicker.adb_path, "D:\\tools\\adb.exe")
+
+        saved = clicker.save_config()
+        self.assertTrue(saved)
+
+        config_file = os.path.join(self.temp_dir, "config.json")
+        with open(config_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data.get("adb_mode"), "custom")
+        self.assertEqual(data.get("custom_adb_path"), "D:\\tools\\adb.exe")
+
+        clicker2 = TeraboxClicker(base_dir=self.temp_dir, logger=lambda _: None)
+        clicker2.load_config()
+        self.assertEqual(clicker2.adb_mode, "custom")
+        self.assertEqual(clicker2.custom_adb_path, "D:\\tools\\adb.exe")
+        self.assertEqual(clicker2.adb_path, "D:\\tools\\adb.exe")
+
+    def test_apply_settings_updates_adb_mode_and_path(self):
+        clicker = TeraboxClicker(base_dir=self.temp_dir, logger=lambda _: None)
+        default_path = get_default_adb_path(self.temp_dir)
+        self.assertEqual(clicker.adb_path, default_path)
+
+        clicker._apply_settings(
+            {"adb_mode": "custom", "custom_adb_path": "E:\\adb\\adb.exe"}
+        )
+        self.assertEqual(clicker.adb_mode, "custom")
+        self.assertEqual(clicker.custom_adb_path, "E:\\adb\\adb.exe")
+        self.assertEqual(clicker.adb_path, "E:\\adb\\adb.exe")
+
+        clicker._apply_settings({"adb_mode": "bundled"})
+        self.assertEqual(clicker.adb_mode, "bundled")
+        self.assertEqual(clicker.adb_path, default_path)
+
+
+    def test_validate_adb_executable_checks_file_and_version_output(self):
+        fake_adb = Path(self.temp_dir, "custom-adb.exe")
+        fake_adb.write_bytes(b"not-really-an-executable")
+        TeraboxClicker._adb_validation_cache.clear()
+        version_result = subprocess.CompletedProcess(
+            [str(fake_adb), "version"],
+            0,
+            "Android Debug Bridge version 1.0.41\nVersion test",
+            "",
+        )
+
+        with patch("main.subprocess.run", return_value=version_result) as run:
+            valid, resolved, message = TeraboxClicker.validate_adb_executable(
+                str(fake_adb)
+            )
+
+        self.assertTrue(valid)
+        self.assertEqual(resolved, str(fake_adb.resolve()))
+        self.assertIn("Android Debug Bridge", message)
+        run.assert_called_once()
+
+        missing = Path(self.temp_dir, "missing-adb.exe")
+        valid, resolved, message = TeraboxClicker.validate_adb_executable(str(missing))
+        self.assertFalse(valid)
+        self.assertEqual(resolved, str(missing.resolve()))
+        self.assertIn("찾을 수 없습니다", message)
+
+    def test_failed_start_is_recovered_when_another_process_started_server(self):
+        messages = []
+        clicker = TeraboxClicker(
+            base_dir=self.temp_dir,
+            port=61337,
+            logger=messages.append,
+        )
+        clicker._probe_adb_server = Mock(side_effect=[False, True])
+        clicker._run_adb = Mock(
+            return_value=subprocess.CompletedProcess(
+                [],
+                1,
+                "",
+                "could not read ok from ADB Server\nfailed to start daemon",
+            )
+        )
+
+        with patch("main.time.sleep"):
+            self.assertTrue(clicker._ensure_adb_server())
+
+        clicker._run_adb.assert_called_once_with(["start-server"], check=False)
+        self.assertTrue(any("could not read ok" in message for message in messages))
+        self.assertTrue(any("다른 스레드/프로세스" in message for message in messages))
+
+    def test_process_wide_adb_lock_starts_server_once_for_concurrent_tabs(self):
+        ready = threading.Event()
+        call_lock = threading.Lock()
+        start_calls = 0
+        clickers = [
+            TeraboxClicker(
+                base_dir=self.temp_dir,
+                port=61338,
+                logger=lambda _: None,
+            )
+            for _ in range(8)
+        ]
+
+        def probe(timeout=0.35):
+            return ready.is_set()
+
+        def start_server(args, **kwargs):
+            nonlocal start_calls
+            self.assertEqual(args, ["start-server"])
+            with call_lock:
+                start_calls += 1
+            time.sleep(0.05)
+            ready.set()
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        for clicker in clickers:
+            clicker._probe_adb_server = probe
+            clicker._run_adb = start_server
+
+        with ThreadPoolExecutor(max_workers=len(clickers)) as executor:
+            results = list(executor.map(lambda item: item._ensure_adb_server(), clickers))
+
+        self.assertTrue(all(results))
+        self.assertEqual(start_calls, 1)
+
+    @unittest.skipUnless(os.name == "nt", "Bundled adb.exe integration test is Windows-only")
+    def test_concurrent_cold_start_succeeds_on_temporary_adb_port(self):
+        adb_path = Path(__file__).resolve().parent / "ADB" / "adb.exe"
+        if not adb_path.is_file():
+            self.skipTest("Bundled adb.exe is unavailable")
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+            probe_socket.bind(("127.0.0.1", 0))
+            temporary_port = probe_socket.getsockname()[1]
+
+        cleanup_command = [
+            str(adb_path),
+            "-P",
+            str(temporary_port),
+            "kill-server",
+        ]
+        subprocess.run(cleanup_command, capture_output=True, timeout=5)
+        messages = []
+        clickers = [
+            TeraboxClicker(
+                adb_path=str(adb_path),
+                base_dir=self.temp_dir,
+                host="127.0.0.1",
+                port=temporary_port,
+                logger=messages.append,
+            )
+            for _ in range(8)
+        ]
+
+        try:
+            with ThreadPoolExecutor(max_workers=len(clickers)) as executor:
+                results = list(
+                    executor.map(lambda item: item._ensure_adb_server(), clickers)
+                )
+            self.assertTrue(all(results), "\n".join(messages))
+            start_messages = [
+                message for message in messages if "ADB 서버 시작 시도" in message
+            ]
+            self.assertEqual(len(start_messages), 1, "\n".join(messages))
+        finally:
+            subprocess.run(cleanup_command, capture_output=True, timeout=5)
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

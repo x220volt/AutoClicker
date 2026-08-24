@@ -1,5 +1,6 @@
 import customtkinter as ctk
 import tkinter as tk
+from tkinter import filedialog
 from PIL import Image, ImageTk
 import os
 import threading
@@ -7,6 +8,7 @@ import time
 import cv2
 import numpy as np
 import queue
+from contextlib import ExitStack
 
 try:
     cv2.setNumThreads(1)
@@ -15,9 +17,15 @@ try:
 except Exception:
     pass
 
-from main import TeraboxClicker, CONFIG_PATH, ADB_COMMAND_TIMEOUT
+from main import (
+    TeraboxClicker,
+    CONFIG_PATH,
+    ADB_COMMAND_TIMEOUT,
+    resolve_adb_path,
+    DEFAULT_ADB_MODE,
+)
 
-VERSION = "v0.3.10"
+VERSION = "v0.3.11"
 
 # 앱 전역 테마를 Dark 모드로 고정
 ctk.set_appearance_mode("Dark")
@@ -559,6 +567,77 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.update_coord_frame_visibility(curr_action)
 
+        # --- Category 5: ADB 실행 환경 설정 ---
+        self.card_adb = make_card("🔌  ADB 실행 환경 설정 (ADB Mode & Path)")
+
+        self.adb_mode_map = {
+            "bundled": "내장 ADB 사용 (기본 권장)",
+            "custom": "외부 ADB 경로 직접 지정",
+        }
+        self.reverse_adb_mode_map = {v: k for k, v in self.adb_mode_map.items()}
+
+        mode_row = ctk.CTkFrame(self.card_adb, fg_color="transparent")
+        mode_row.pack(fill="x", padx=14, pady=(0, 6))
+        mode_lbl = ctk.CTkLabel(mode_row, text="ADB 모드:", anchor="w", font=ctk.CTkFont(size=12))
+        mode_lbl.pack(side="left", padx=(0, 10))
+
+        curr_adb_mode = getattr(self.clicker, "adb_mode", "bundled")
+        curr_adb_label = self.adb_mode_map.get(curr_adb_mode, "내장 ADB 사용 (기본 권장)")
+
+        self.adb_mode_combo = ctk.CTkOptionMenu(
+            mode_row,
+            values=list(self.adb_mode_map.values()),
+            height=28,
+            corner_radius=RADIUS_SM,
+            command=self.on_adb_mode_changed,
+        )
+        self.adb_mode_combo.set(curr_adb_label)
+        self.adb_mode_combo.pack(side="right", fill="x", expand=True)
+
+        self.custom_adb_frame = ctk.CTkFrame(self.card_adb, fg_color="transparent")
+        self.custom_adb_frame.pack(fill="x", padx=14, pady=(0, 6))
+
+        adb_path_lbl = ctk.CTkLabel(
+            self.custom_adb_frame,
+            text="경로:",
+            font=ctk.CTkFont(size=12),
+            text_color=COLOR_TEXT_MUTED,
+        )
+        adb_path_lbl.pack(side="left", padx=(0, 6))
+
+        self.custom_adb_entry = ctk.CTkEntry(
+            self.custom_adb_frame,
+            height=28,
+            corner_radius=RADIUS_SM,
+            placeholder_text="예: C:\\platform-tools\\adb.exe",
+        )
+        self.custom_adb_entry.insert(0, getattr(self.clicker, "custom_adb_path", ""))
+        self.custom_adb_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self.custom_adb_entry.bind("<KeyRelease>", self.on_adb_candidate_changed)
+
+        self.browse_adb_btn = ctk.CTkButton(
+            self.custom_adb_frame,
+            text="📁 찾아보기",
+            width=80,
+            height=28,
+            fg_color=COLOR_PRIMARY,
+            hover_color=COLOR_PRIMARY_HOVER,
+            corner_radius=RADIUS_SM,
+            command=self.browse_custom_adb,
+        )
+        self.browse_adb_btn.pack(side="right")
+
+        self.adb_status_label = ctk.CTkLabel(
+            self.card_adb,
+            text=f"현재 적용: {self.clicker.adb_path}",
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_MUTED,
+            anchor="w",
+        )
+        self.adb_status_label.pack(fill="x", padx=14, pady=(0, 10))
+
+        self.update_adb_frame_visibility(curr_adb_mode)
+
         # Footer Frame (Fixed Bottom)
         self.footer_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.footer_frame.pack(fill="x", padx=16, pady=(6, 12))
@@ -579,7 +658,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.close_btn = ctk.CTkButton(
             self.footer_frame,
-            text="닫기 (Close)",
+            text="설정 저장 및 닫기 (Save & Close)",
             height=34,
             fg_color=COLOR_NEUTRAL,
             hover_color=COLOR_NEUTRAL_HOVER,
@@ -600,6 +679,57 @@ class SettingsWindow(ctk.CTkToplevel):
             self.coord_frame.pack(fill="x", padx=14, pady=(0, 10))
         else:
             self.coord_frame.pack_forget()
+
+    def on_adb_mode_changed(self, choice):
+        mode_key = self.reverse_adb_mode_map.get(choice, "bundled")
+        self.update_adb_frame_visibility(mode_key)
+
+    def update_adb_frame_visibility(self, mode_key):
+        if mode_key == "custom":
+            self.custom_adb_frame.pack(fill="x", padx=14, pady=(0, 6))
+        else:
+            self.custom_adb_frame.pack_forget()
+        self.on_adb_candidate_changed()
+
+    def on_adb_candidate_changed(self, event=None):
+        if hasattr(self, "adb_status_label") and self.adb_status_label.winfo_exists():
+            mode_key = self.reverse_adb_mode_map.get(
+                self.adb_mode_combo.get(), "bundled"
+            )
+            custom_path = (
+                self.custom_adb_entry.get().strip()
+                if hasattr(self, "custom_adb_entry")
+                else ""
+            )
+            resolved = resolve_adb_path(
+                mode_key,
+                custom_path,
+                self.clicker.base_dir,
+            )
+            pending = (
+                mode_key != getattr(self.clicker, "adb_mode", DEFAULT_ADB_MODE)
+                or custom_path != getattr(self.clicker, "custom_adb_path", "")
+            )
+            self.adb_status_label.configure(
+                text=f"{'저장 대기' if pending else '현재 적용'}: {resolved}",
+                text_color=COLOR_WARNING if pending else COLOR_TEXT_MUTED,
+            )
+
+    def browse_custom_adb(self):
+        initial_dir = None
+        curr = self.custom_adb_entry.get().strip()
+        if curr and os.path.exists(os.path.dirname(curr)):
+            initial_dir = os.path.dirname(curr)
+        file_path = filedialog.askopenfilename(
+            parent=self,
+            title="ADB 실행 파일(adb.exe) 선택",
+            filetypes=[("ADB 실행 파일 (*.exe)", "*.exe"), ("모든 파일 (*.*)", "*.*")],
+            initialdir=initial_dir,
+        )
+        if file_path:
+            self.custom_adb_entry.delete(0, "end")
+            self.custom_adb_entry.insert(0, os.path.normpath(file_path))
+            self.on_adb_candidate_changed()
 
     def pick_coords_from_screen(self):
         try:
@@ -769,7 +899,97 @@ class SettingsWindow(ctk.CTkToplevel):
         except ValueError:
             pass
 
+
         self.parent_frame.app_owner.sync_shared_settings_to_all(self.parent_frame)
+
+    def _apply_adb_settings(self):
+        """Validate and atomically apply the pending ADB choice to every tab."""
+        adb_mode = self.reverse_adb_mode_map.get(
+            self.adb_mode_combo.get(), "bundled"
+        )
+        custom_path = self.custom_adb_entry.get().strip()
+        if adb_mode == "custom" and not custom_path:
+            validation_message = "외부 ADB 모드에서는 adb.exe 경로를 지정해야 합니다."
+            self.adb_status_label.configure(
+                text=f"검증 실패: {validation_message}",
+                text_color=COLOR_DANGER,
+            )
+            from tkinter import messagebox
+
+            messagebox.showerror(
+                "ADB 실행 파일 검증 실패",
+                f"ADB 설정을 적용하지 않았습니다.\n\n{validation_message}",
+                parent=self,
+            )
+            return False
+        candidate_path = resolve_adb_path(
+            adb_mode,
+            custom_path,
+            self.clicker.base_dir,
+        )
+        valid, resolved_path, validation_message = (
+            self.clicker.validate_adb_executable(candidate_path)
+        )
+        if not valid:
+            self.adb_status_label.configure(
+                text=f"검증 실패: {validation_message}",
+                text_color=COLOR_DANGER,
+            )
+            from tkinter import messagebox
+
+            messagebox.showerror(
+                "ADB 실행 파일 검증 실패",
+                f"ADB 설정을 적용하지 않았습니다.\n\n{validation_message}",
+                parent=self,
+            )
+            return False
+
+        frames = tuple(self.parent_frame.app_owner.tab_frames.values())
+        changed = any(
+            frame.clicker.adb_mode != adb_mode
+            or frame.clicker.custom_adb_path != custom_path
+            or os.path.normcase(os.path.abspath(frame.clicker.adb_path))
+            != os.path.normcase(os.path.abspath(resolved_path))
+            for frame in frames
+        )
+        active_frames = []
+        if changed:
+            with ExitStack() as lock_stack:
+                for frame in frames:
+                    lock_stack.enter_context(frame.clicker._device_lock)
+                active_frames = [
+                    frame
+                    for frame in frames
+                    if frame.clicker.device is not None
+                    or frame.clicker.is_running
+                    or getattr(frame, "_loop_starting", False)
+                ]
+                if not active_frames:
+                    for frame in frames:
+                        frame.clicker.adb_mode = adb_mode
+                        frame.clicker.custom_adb_path = custom_path
+                        frame.clicker.adb_path = resolved_path
+        if changed and active_frames:
+            self.adb_status_label.configure(
+                text="적용 보류: 모든 디바이스 연결을 먼저 해제하세요.",
+                text_color=COLOR_WARNING,
+            )
+            from tkinter import messagebox
+
+            messagebox.showwarning(
+                "ADB 설정 적용 보류",
+                "실행 중 ADB 바이너리 교체를 방지하기 위해 설정을 적용하지 않았습니다.\n"
+                "모든 디바이스 연결을 해제한 뒤 다시 저장해 주세요.",
+                parent=self,
+            )
+            return False
+
+        self.adb_status_label.configure(
+            text=f"현재 적용: {resolved_path} ({validation_message})",
+            text_color=COLOR_SUCCESS,
+        )
+        self.parent_frame.log_message(f"ADB 실행 환경 적용 완료: {resolved_path}")
+        return True
 
     def schedule_save(self, event=None):
         self._apply_form_values()
@@ -793,6 +1013,9 @@ class SettingsWindow(ctk.CTkToplevel):
             self.after_cancel(self._save_after_id)
             self._save_after_id = None
         self._apply_form_values()
+        if not self._apply_adb_settings():
+            self._persist_settings()
+            return
         self._persist_settings()
         try:
             self.grab_release()

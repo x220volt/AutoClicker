@@ -3,7 +3,35 @@
 모든 주요 변경 사항은 이 문서에 기록됩니다.  
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/) 규칙을 따릅니다.
 
-## [v0.3.10] - 2026-08-23
+## [v0.3.11] - 2026-08-25
+
+### 🚀 Packaging & Distribution (패키징 및 배포)
+- **단일 실행 파일(`--onefile`) 패키징 지원**:
+  - PyInstaller 설정을 단일 독립 실행 파일(`TeraboxClicker.exe`) 모드로 전환
+  - 내장 ADB 번들 및 CustomTkinter 리소스를 EXE 내부에 직접 번들링하여 별도 압축 해제나 폴더 유지 없이 단일 파일로 바로 실행 가능
+  - GitHub Actions 워크플로우(`release.yml`) 릴리즈 배포 산출물을 단일 `TeraboxClicker.exe`로 최적화
+
+---
+
+## [v0.3.10] - 2026-08-24
+ 
+### 🚀 Added (추가)
+- **내장 ADB 및 외부 ADB 경로 선택 기능 (ADB Execution Mode & Custom Path)**:
+  - 설정창(`SettingsWindow`)에 `🔌 ADB 실행 환경 설정 (ADB Mode & Path)` 카드 섹션 추가
+  - `내장 ADB 사용 (기본 권장)` vs `외부 ADB 경로 직접 지정` 모드 선택 지원
+  - 외부 ADB 지정 시 `📁 찾아보기` 파일 탐색기를 통해 원하는 `adb.exe`를 손쉽게 선택 가능
+  - 현재 실제 적용 중인 ADB 실행 파일 경로 실시간 미리보기 라벨 제공
+  - 외부 경로는 `설정 저장 및 닫기` 시 파일 존재 여부와 `adb version` 검증을 통과한 경우에만 모든 탭에 적용 및 영구 저장
+
+### 🛠️ Fixed (수정)
+- **다중 인스턴스 ADB 콜드 스타트 경합 제거**:
+  - host/port별 앱 전역 공유 잠금과 ADB 프로토콜 프로브를 도입하여 데몬을 한 번만 시작
+  - `start-server` 실패 후 다른 스레드/프로세스가 시작한 서버를 재확인하고 짧은 간격으로 최대 3회 재시도
+  - `start-server`, `connect`, `devices`, 클라이언트 초기화 오류를 분리하고 exit code/stdout/stderr 기록
+  - 실제 번들 ADB와 임시 포트를 사용하는 동시 콜드 스타트 회귀 테스트 추가
+- **반복 Windows 방화벽 팝업을 유발하던 ADB 임시 경로 제거**:
+  - PyInstaller one-file의 `_MEIxxxxxx` 임시 ADB 실행을 onedir 고정 경로 패키징으로 전환
+  - 릴리스 산출물을 `TeraboxClicker-windows-x64.zip`으로 변경하고 `ADB/adb.exe` 포함 여부를 CI에서 검증
 
 ### ⚡ Performance & Optimization (성능 최적화)
 - **템플릿 매칭 핫패스의 파일 시스템 조회(os.stat / os.path.exists) 100% 제거**:
