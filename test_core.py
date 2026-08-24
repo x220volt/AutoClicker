@@ -1719,6 +1719,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             return subprocess.CompletedProcess(args, 0, stdout, "")
 
         clicker._run_adb = Mock(side_effect=run_adb)
+        clicker._probe_adb_server = Mock(return_value=True)
         device = Mock(serial="emulator-5554")
         with patch("main.AdbClient") as client_class, patch(
             "main.AdbDevice", return_value=device
@@ -2215,6 +2216,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             return subprocess.CompletedProcess(args, 0, stdout, "")
 
         clicker._run_adb = Mock(side_effect=run_adb)
+        clicker._probe_adb_server = Mock(return_value=True)
         device = Mock(serial="127.0.0.1:5555")
         try:
             with patch("main.AdbClient"), patch(
@@ -2948,14 +2950,14 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             )
 
         self.assertTrue(valid)
-        self.assertEqual(resolved, str(fake_adb.resolve()))
+        self.assertEqual(Path(resolved).resolve(), fake_adb.resolve())
         self.assertIn("Android Debug Bridge", message)
         run.assert_called_once()
 
         missing = Path(self.temp_dir, "missing-adb.exe")
         valid, resolved, message = TeraboxClicker.validate_adb_executable(str(missing))
         self.assertFalse(valid)
-        self.assertEqual(resolved, str(missing.resolve()))
+        self.assertEqual(Path(resolved).resolve(), missing.resolve())
         self.assertIn("찾을 수 없습니다", message)
 
     def test_failed_start_is_recovered_when_another_process_started_server(self):
