@@ -1,4 +1,4 @@
-# ⚡ Terabox Auto Clicker Multi (v0.3.11) 사용 설명서
+# ⚡ Auto Clicker Multi (v0.3.11) 사용 설명서
 
 안드로이드 에뮬레이터(MSI App Player, BlueStacks, LDPlayer, Nox, MuMu, MEmu 등)의 화면을 실시간 캡처 및 템플릿 매칭으로 분석하여 원하는 버튼을 자동으로 탐색, 클릭 및 뒤로가기 동작을 수행하는 **다중 인스턴스 지원 스마트 매크로 프로그램**입니다.
 
@@ -22,7 +22,7 @@
 ## 🚀 1. 빠른 시작 (Getting Started)
 
 1. **에뮬레이터 실행**: 매크로를 적용할 안드로이드 에뮬레이터(예: LDPlayer, BlueStacks, Nox, MuMu 등)를 켜고 대상 앱을 실행합니다.
-2. **프로그램 실행**: 다운로드한 `TeraboxClicker.exe` 단일 실행 파일을 실행합니다. (내장 ADB 번들이 포함되어 있어 단독 실행 가능)
+2. **프로그램 실행**: 다운로드한 `AutoClicker.exe` 단일 실행 파일을 실행합니다. (내장 ADB 번들이 포함되어 있어 단독 실행 가능)
 3. **디바이스 연결 및 시작**:
    - 상단 툴바의 **`전체 연결`** 버튼을 누르거나, 각 인스턴스 탭에서 **`디바이스 연결`**을 클릭합니다.
    - `상태: 연결 완료`로 변경되면 **`전체 시작`** 또는 개별 탭의 **`클리커 시작`**을 눌러 자동 클릭을 시작합니다.
@@ -227,9 +227,9 @@ python -m unittest test_core.py
 ### 3) 단일 실행 파일(onefile) 빌드
 ```powershell
 # PyInstaller 단일 실행 파일 빌드
-pyinstaller TeraboxClicker.spec --noconfirm
+pyinstaller AutoClicker.spec --noconfirm
 ```
-빌드가 완료되면 `dist/TeraboxClicker.exe` 단일 실행 파일이 생성됩니다. 내장 ADB 바이너리가 EXE 내부에 자체 패키징되어 별도의 폴더 없이 단독으로 배포 및 실행이 가능합니다.
+빌드가 완료되면 `dist/AutoClicker.exe` 단일 실행 파일이 생성됩니다. 내장 ADB 바이너리가 EXE 내부에 자체 패키징되어 별도의 폴더 없이 단독으로 배포 및 실행이 가능합니다.
 
 ---
 

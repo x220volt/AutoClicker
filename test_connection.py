@@ -1,9 +1,9 @@
-from main import TeraboxClicker, ADB_PATH, ADB_HOST, ADB_PORT, DEVICE_ADDRESS
+from main import AutoClicker, ADB_PATH, ADB_HOST, ADB_PORT, DEVICE_ADDRESS
 import cv2
 
 def test():
     print("=== 연결 및 캡처 테스트 시작 ===")
-    clicker = TeraboxClicker(ADB_PATH, ADB_HOST, ADB_PORT, DEVICE_ADDRESS)
+    clicker = AutoClicker(ADB_PATH, ADB_HOST, ADB_PORT, DEVICE_ADDRESS)
     
     if clicker.start_adb_server():
         print("1. ADB 서버 및 장치 연결 성공")

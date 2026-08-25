@@ -18,6 +18,7 @@ except Exception:
     pass
 
 from main import (
+    AutoClicker,
     TeraboxClicker,
     CONFIG_PATH,
     ADB_COMMAND_TIMEOUT,
@@ -1473,7 +1474,7 @@ class AddInstanceWindow(ctk.CTkToplevel):
         threading.Thread(target=self.fetch_devices, daemon=True).start()
 
     def fetch_devices(self):
-        dummy = TeraboxClicker()
+        dummy = AutoClicker()
         devices = dummy.get_connected_devices()
         
         def update_ui():
@@ -1559,7 +1560,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         self._drag_positions = []
         self._timer_render_state = {}
 
-        self.clicker = TeraboxClicker(
+        self.clicker = AutoClicker(
             device_address=device_address,
             on_timeout_callback=self.on_no_match_timeout,
             logger=self.log_message,
@@ -3340,7 +3341,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title(f"Terabox Auto Clicker Multi-Instance {VERSION}")
+        self.title(f"Auto Clicker Multi-Instance {VERSION}")
         self.geometry("1300x760")
         self.minsize(1050, 600)
         
@@ -3368,7 +3369,7 @@ class App(ctk.CTk):
 
         self.logo_label = ctk.CTkLabel(
             self.top_bar, 
-            text="⚡ Terabox Clicker Multi", 
+            text="⚡ Auto Clicker Multi", 
             font=ctk.CTkFont(size=17, weight="bold")
         )
         self.logo_label.pack(side="left", padx=(16, 16), pady=8)
@@ -3476,23 +3477,21 @@ class App(ctk.CTk):
 
     @staticmethod
     def _preload_configured_templates():
-        config = TeraboxClicker.read_config(CONFIG_PATH)
-        default_mode = TeraboxClicker._safe_bool(
-            config.get("match_grayscale"), True
+        config = AutoClicker.read_config(CONFIG_PATH)
+        default_mode = AutoClicker._safe_bool(
+            config.get("global_grayscale_matching", True),
+            True,
         )
-        instances = config.get("instances", [])
-        if not isinstance(instances, list):
-            instances = []
-        modes = {
-            TeraboxClicker._safe_bool(
-                instance.get("match_grayscale"), default_mode
+        modes = {default_mode}
+        for inst in config.get("instances", []):
+            modes.add(
+                AutoClicker._safe_bool(
+                    inst.get("grayscale_matching", default_mode),
+                    default_mode,
+                )
             )
-            for instance in instances
-            if isinstance(instance, dict)
-        }
-        if not modes:
-            modes.add(default_mode)
-        TeraboxClicker.preload_templates(grayscales=tuple(modes))
+        AutoClicker.preload_templates(grayscales=tuple(modes))
+
     def format_tab_name(self, index, device_address):
         addr_str = str(device_address).strip()
         if addr_str.startswith("emulator-"):
@@ -3551,7 +3550,7 @@ class App(ctk.CTk):
         self._timer_pump_id = self.after(500, self._pump_timer_updates)
 
     def load_and_initialize_tabs(self):
-        config = TeraboxClicker.read_config(CONFIG_PATH)
+        config = AutoClicker.read_config(CONFIG_PATH)
         saved_addresses = []
         instances = config.get("instances", [])
         if isinstance(instances, list):
@@ -3811,7 +3810,7 @@ class App(ctk.CTk):
 
     def refresh_all_devices(self):
         def task():
-            dummy_clicker = TeraboxClicker()
+            dummy_clicker = AutoClicker()
             devices = dummy_clicker.get_connected_devices()
 
             def update_ui():
@@ -3858,7 +3857,7 @@ class App(ctk.CTk):
         primary_settings = None
         if self.tab_frames:
             primary_settings = next(iter(self.tab_frames.values())).clicker._settings_dict()
-        return TeraboxClicker.update_instances_config(
+        return AutoClicker.update_instances_config(
             instances_data,
             CONFIG_PATH,
             primary_settings=primary_settings,

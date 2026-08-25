@@ -109,7 +109,7 @@ CONFIG_PATH = os.path.join(APP_DIR, CONFIG_FILENAME)
 ADB_PATH = get_default_adb_path(APP_DIR)
 
 
-class TeraboxClicker:
+class AutoClicker:
     """Thread-safe ADB screen matcher used by both the CLI and GUI."""
 
     _config_lock = threading.RLock()
@@ -3271,7 +3271,7 @@ class TeraboxClicker:
         suppress_y = max(1, template_height // 2)
         for _ in range(max(1, int(limit))):
             values = cv2.minMaxLoc(result)
-            confidence, location = TeraboxClicker._score_location(method, *values)
+            confidence, location = AutoClicker._score_location(method, *values)
             if not math.isfinite(confidence) or confidence < threshold:
                 break
             candidates.append((location, float(confidence)))
@@ -3961,9 +3961,10 @@ class TeraboxClicker:
         self.flush_counts()
         with self._device_lock:
             self.device = None
-            self.client = None
+# Backward compatibility alias
+TeraboxClicker = AutoClicker
 
 
 if __name__ == "__main__":
-    clicker = TeraboxClicker(ADB_PATH, ADB_HOST, ADB_PORT, DEVICE_ADDRESS)
+    clicker = AutoClicker(ADB_PATH, ADB_HOST, ADB_PORT, DEVICE_ADDRESS)
     clicker.start_loop()

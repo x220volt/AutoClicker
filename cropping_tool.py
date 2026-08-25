@@ -3,7 +3,7 @@ import numpy as np
 import os
 import threading
 
-from main import ADB_HOST, ADB_PATH, ADB_PORT, DEVICE_ADDRESS, TeraboxClicker
+from main import ADB_HOST, ADB_PATH, ADB_PORT, DEVICE_ADDRESS, AutoClicker
 
 
 def normalize_filename(value):
@@ -164,7 +164,7 @@ def select_click_point(screen, roi):
 
 def main():
     print("=== 템플릿 추출 도구 실행 ===")
-    clicker = TeraboxClicker(ADB_PATH, ADB_HOST, ADB_PORT, DEVICE_ADDRESS)
+    clicker = AutoClicker(ADB_PATH, ADB_HOST, ADB_PORT, DEVICE_ADDRESS)
     try:
         if not clicker.start_adb_server():
             print("에뮬레이터 연결 실패. 설정과 포트를 확인하세요.")

@@ -20,7 +20,7 @@ from main import (
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SIMILARITY_THRESHOLD,
     TEMPLATE_MANIFEST_REFRESH_INTERVAL,
-    TeraboxClicker,
+    AutoClicker,
     resolve_adb_path,
     get_default_adb_path,
     DEFAULT_ADB_MODE,
@@ -28,14 +28,14 @@ from main import (
 from cropping_tool import normalize_filename, save_template
 
 
-class TeraboxClickerCoreTests(unittest.TestCase):
+class AutoClickerCoreTests(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.mkdtemp(prefix="terabox-clicker-test-")
+        self.temp_dir = tempfile.mkdtemp(prefix="auto-clicker-test-")
         Path(self.temp_dir, "templates").mkdir()
         Path(self.temp_dir, "fallback_templates").mkdir()
 
     def tearDown(self):
-        TeraboxClicker._flush_pending_counts(
+        AutoClicker._flush_pending_counts(
             os.path.join(self.temp_dir, "config.json")
         )
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -71,7 +71,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             json.dumps(config), encoding="utf-8"
         )
 
-        clicker = TeraboxClicker(base_dir=self.temp_dir, logger=lambda _: None)
+        clicker = AutoClicker(base_dir=self.temp_dir, logger=lambda _: None)
 
         self.assertEqual(clicker.device_address, "emulator-9999")
         self.assertEqual(clicker.scan_interval, DEFAULT_SCAN_INTERVAL)
@@ -91,7 +91,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template = self._pattern()
         template_path = Path(self.temp_dir, "templates", "pattern.png")
         self._write_png(template_path, template)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -126,7 +126,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template = np.full((8, 8, 3), 255, dtype=np.uint8)
         template_path = Path(self.temp_dir, "templates", "flat.png")
         self._write_png(template_path, template)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -144,13 +144,13 @@ class TeraboxClickerCoreTests(unittest.TestCase):
     def test_count_deltas_from_multiple_instances_are_merged(self):
         template_path = Path(self.temp_dir, "templates", "count.png")
         self._write_png(template_path, self._pattern())
-        first = TeraboxClicker(
+        first = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-1",
             logger=lambda _: None,
         )
         self.assertTrue(first.save_config())
-        second = TeraboxClicker(
+        second = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-2",
             logger=lambda _: None,
@@ -161,11 +161,11 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(second._record_match("count.png"), 3)
         self.assertTrue(first.flush_counts())
 
-        config = TeraboxClicker.read_config(first.config_path)
+        config = AutoClicker.read_config(first.config_path)
         self.assertEqual(config["template_counts"]["count.png"], 3)
 
         second.reset_counts()
-        config = TeraboxClicker.read_config(first.config_path)
+        config = AutoClicker.read_config(first.config_path)
         self.assertEqual(config["template_counts"]["count.png"], 0)
 
     def test_corrupt_config_is_not_overwritten(self):
@@ -173,7 +173,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         corrupt_text = "{ definitely-not-json"
         config_path.write_text(corrupt_text, encoding="utf-8")
         messages = []
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=messages.append,
@@ -184,7 +184,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertTrue(any("설정" in message for message in messages))
 
     def test_adb_connection_is_not_reported_for_unlisted_device(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
@@ -200,7 +200,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertIsNone(clicker.device)
 
     def test_stop_interrupts_a_long_scan_interval(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=30,
@@ -235,7 +235,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
                     normalize_filename(invalid)
 
     def test_cropping_save_updates_file_and_config_atomically(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -249,14 +249,14 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertIn("created.png", clicker.template_order)
         self.assertEqual(clicker.template_offsets["created.png"], [7, 9])
         self.assertEqual(clicker.template_actions["created.png"], "click")
-        config = TeraboxClicker.read_config(clicker.config_path)
+        config = AutoClicker.read_config(clicker.config_path)
         self.assertEqual(config["template_offsets"]["created.png"], [7, 9])
         self.assertFalse(
             list(Path(self.temp_dir, "templates").glob("*.tmp"))
         )
 
     def test_device_failure_invalidates_device_reference(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -273,7 +273,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertIsNone(clicker.device)
 
     def test_toggle_and_reset_actions(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -290,7 +290,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(clicker.toggle_fallback_action("fb1.png"), "double_click")
 
     def test_no_match_action_dispatch(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -310,7 +310,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         mock_device.shell.assert_called_with("input tap 120 340", timeout=ADB_COMMAND_TIMEOUT)
 
     def test_timers_status_calculation(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -334,7 +334,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         # 127.0.0.1:5555 covers emulator-5554, so emulator-5554 is deduplicated.
         # emulator-5556 has no corresponding IP, so it is safely kept as-is.
         raw = ["emulator-5554", "127.0.0.1:5555", "emulator-5556", "192.168.1.100:5555", "RF8N10XXXXX"]
-        normalized = TeraboxClicker.normalize_device_serials(raw)
+        normalized = AutoClicker.normalize_device_serials(raw)
         self.assertEqual(
             normalized,
             ["127.0.0.1:5555", "192.168.1.100:5555", "emulator-5556", "RF8N10XXXXX"]
@@ -345,7 +345,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template_path = Path(self.temp_dir, "templates", "test_btn.png")
         self._write_png(template_path, template)
 
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -366,7 +366,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(clicker.template_counts["test_btn.png"], 1)
 
     def test_fallback_final_action_execution(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -388,7 +388,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
 
     def test_timeout_callback_is_triggered_only_once_until_match(self):
         callback_mock = Mock()
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -430,7 +430,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         Path(self.temp_dir, "config.json").write_text(
             json.dumps(config), encoding="utf-8"
         )
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -465,7 +465,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         Path(self.temp_dir, "config.json").write_text(
             json.dumps(config), encoding="utf-8"
         )
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -491,7 +491,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         # Test setting delay and saving
         clicker.set_template_delay("delayed_btn.png", 3.0)
         self.assertEqual(clicker.template_delays["delayed_btn.png"], 3.0)
-        reloaded = TeraboxClicker.read_config(clicker.config_path)
+        reloaded = AutoClicker.read_config(clicker.config_path)
         self.assertEqual(reloaded["template_delays"]["delayed_btn.png"], 3.0)
 
         # Test deleting template removes delay entry
@@ -503,13 +503,13 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template_path = Path(self.temp_dir, "templates", "preloaded.png")
         self._write_png(template_path, template)
 
-        TeraboxClicker.invalidate_template_cache()
-        loaded = TeraboxClicker.preload_templates(
+        AutoClicker.invalidate_template_cache()
+        loaded = AutoClicker.preload_templates(
             [Path(self.temp_dir, "templates")], grayscales=(False, True)
         )
         self.assertGreaterEqual(loaded, 2)
 
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -542,20 +542,20 @@ class TeraboxClickerCoreTests(unittest.TestCase):
     def test_template_directory_manifest_is_shared_and_throttled(self):
         template_dir = Path(self.temp_dir, "templates")
         self._write_png(template_dir / "shared.png", self._pattern())
-        TeraboxClicker.invalidate_template_cache()
+        AutoClicker.invalidate_template_cache()
         clock = [100.0]
 
         with patch(
             "main.time.perf_counter", side_effect=lambda: clock[0]
         ), patch("main.os.scandir", wraps=os.scandir) as scandir:
-            TeraboxClicker._refresh_template_directory(template_dir)
-            TeraboxClicker._refresh_template_directory(template_dir)
+            AutoClicker._refresh_template_directory(template_dir)
+            AutoClicker._refresh_template_directory(template_dir)
             clock[0] += TEMPLATE_MANIFEST_REFRESH_INTERVAL * 0.5
-            TeraboxClicker._refresh_template_directory(template_dir)
+            AutoClicker._refresh_template_directory(template_dir)
             self.assertEqual(scandir.call_count, 1)
 
             clock[0] += TEMPLATE_MANIFEST_REFRESH_INTERVAL
-            TeraboxClicker._refresh_template_directory(template_dir)
+            AutoClicker._refresh_template_directory(template_dir)
             self.assertEqual(scandir.call_count, 2)
 
     def test_multi_instance_shares_preloaded_template_cache(self):
@@ -563,14 +563,14 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template_path = Path(self.temp_dir, "templates", "shared.png")
         self._write_png(template_path, template)
 
-        TeraboxClicker.invalidate_template_cache()
-        TeraboxClicker.preload_templates(
+        AutoClicker.invalidate_template_cache()
+        AutoClicker.preload_templates(
             [Path(self.temp_dir, "templates")], grayscales=(True,)
         )
 
-        inst1 = TeraboxClicker(base_dir=self.temp_dir, device_address="emulator-1", logger=lambda _: None)
-        inst2 = TeraboxClicker(base_dir=self.temp_dir, device_address="emulator-2", logger=lambda _: None)
-        inst3 = TeraboxClicker(base_dir=self.temp_dir, device_address="emulator-3", logger=lambda _: None)
+        inst1 = AutoClicker(base_dir=self.temp_dir, device_address="emulator-1", logger=lambda _: None)
+        inst2 = AutoClicker(base_dir=self.temp_dir, device_address="emulator-2", logger=lambda _: None)
+        inst3 = AutoClicker(base_dir=self.temp_dir, device_address="emulator-3", logger=lambda _: None)
 
         screen = np.zeros((80, 100, 3), dtype=np.uint8)
         screen[20:32, 30:42] = template
@@ -599,7 +599,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         Path(self.temp_dir, "config.json").write_text(
             json.dumps(config), encoding="utf-8"
         )
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -625,7 +625,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template_path = Path(self.temp_dir, "templates", "tiny_icon.png")
         self._write_png(template_path, small_template)
 
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -647,7 +647,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template_path = Path(self.temp_dir, "templates", "large_btn.png")
         self._write_png(template_path, large_template)
 
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -661,7 +661,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
 
     def test_subprocess_capture_fallback(self):
         """capture_screen should fallback to ppadb screencap when subprocess fails."""
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
@@ -698,16 +698,16 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         Path(config_path).write_text(json.dumps(config), encoding="utf-8")
 
         # First read - should populate cache
-        result1 = TeraboxClicker._read_config_unlocked(config_path)
+        result1 = AutoClicker._read_config_unlocked(config_path)
         self.assertEqual(result1["scan_interval"], 3)
 
         # Second read - should hit cache (same mtime)
-        result2 = TeraboxClicker._read_config_unlocked(config_path)
+        result2 = AutoClicker._read_config_unlocked(config_path)
         self.assertEqual(result2["scan_interval"], 3)
 
         # Verify both are independent dicts (not shared references)
         result1["scan_interval"] = 999
-        result3 = TeraboxClicker._read_config_unlocked(config_path)
+        result3 = AutoClicker._read_config_unlocked(config_path)
         self.assertEqual(result3["scan_interval"], 3)
 
     def test_template_pre_and_post_action_delays(self):
@@ -726,7 +726,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         Path(self.temp_dir, "config.json").write_text(
             json.dumps(config), encoding="utf-8"
         )
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -761,12 +761,12 @@ class TeraboxClickerCoreTests(unittest.TestCase):
     def test_default_preload_is_valid_and_concurrent_calls_decode_once(self):
         template_path = Path(self.temp_dir, "templates", "preload_once.png")
         self._write_png(template_path, self._pattern(size=32))
-        TeraboxClicker.invalidate_template_cache(template_path)
+        AutoClicker.invalidate_template_cache(template_path)
         errors = []
 
         def preload():
             try:
-                TeraboxClicker.preload_templates(grayscales=(True,))
+                AutoClicker.preload_templates(grayscales=(True,))
             except Exception as error:
                 errors.append(error)
 
@@ -782,13 +782,13 @@ class TeraboxClickerCoreTests(unittest.TestCase):
 
         self.assertFalse(errors)
         self.assertEqual(fromfile.call_count, 1)
-        TeraboxClicker.invalidate_template_cache(template_path)
+        AutoClicker.invalidate_template_cache(template_path)
 
     def test_local_verify_avoids_full_resolution_screen_match(self):
         template = self._pattern(size=40)
         template_path = Path(self.temp_dir, "templates", "local.png")
         self._write_png(template_path, template)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -818,7 +818,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template = self._pattern(size=40)
         template_path = Path(self.temp_dir, "templates", "roi.png")
         self._write_png(template_path, template)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -848,7 +848,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertNotIn((200, 300), observed_shapes)
 
     def test_local_verify_falls_back_to_full_region(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -882,7 +882,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(match_region.call_args_list[-1].args[-1], "match.full")
 
     def test_identical_frame_skip_preserves_post_match_rescan(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -898,7 +898,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertTrue(clicker._should_scan_frame(screen, 100.2))
 
     def test_adaptive_interval_grows_only_while_unchanged(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=1,
@@ -917,7 +917,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(clicker._current_loop_interval(), 1.0)
 
     def test_adaptive_order_protects_first_three_priorities(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -939,8 +939,8 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             [255, 0, 0, 255, 0, 255, 0, 255]
         )
 
-        color = TeraboxClicker._decode_raw_screencap(payload, False)
-        gray = TeraboxClicker._decode_raw_screencap(payload, True)
+        color = AutoClicker._decode_raw_screencap(payload, False)
+        gray = AutoClicker._decode_raw_screencap(payload, True)
 
         self.assertEqual(color.shape, (1, 2, 3))
         self.assertEqual(color[0, 0].tolist(), [0, 0, 255])
@@ -948,7 +948,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(gray.shape, (1, 2))
 
     def test_corrupt_exec_capture_uses_resolved_serial_and_ppadb_fallback(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
@@ -976,7 +976,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         device.create_connection.assert_called_once_with(timeout=ADB_COMMAND_TIMEOUT)
 
     def test_capture_direct_socket_success(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -999,7 +999,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         mock_sock.connect.assert_called_once_with(("127.0.0.1", 5037))
 
     def test_reconnect_backoff_avoids_repeated_connect_processes(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1019,10 +1019,10 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             "template_rois": {"x.png": [0.1, 0.2, 0.3, 0.4]},
         }), encoding="utf-8")
 
-        first = TeraboxClicker.read_config(str(config_path))
+        first = AutoClicker.read_config(str(config_path))
         first["instances"][0]["future"]["value"] = 99
         first["template_rois"]["x.png"][0] = 0.9
-        second = TeraboxClicker.read_config(str(config_path))
+        second = AutoClicker.read_config(str(config_path))
 
         self.assertEqual(second["instances"][0]["future"]["value"], 1)
         self.assertEqual(second["template_rois"]["x.png"][0], 0.1)
@@ -1038,19 +1038,19 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             }],
         }), encoding="utf-8")
 
-        saved = TeraboxClicker.update_instances_config(
+        saved = AutoClicker.update_instances_config(
             [{"device_address": "a", "scan_interval": 1}],
             str(config_path),
             primary_settings={"device_address": "a", "scan_interval": 1},
         )
-        result = TeraboxClicker.read_config(str(config_path))
+        result = AutoClicker.read_config(str(config_path))
 
         self.assertTrue(saved)
         self.assertEqual(result["scan_interval"], 1)
         self.assertEqual(result["instances"][0]["future"]["value"], 7)
 
     def test_performance_metrics_are_bounded(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1068,7 +1068,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template = self._pattern(size=40)
         template_path = Path(self.temp_dir, "templates", "hint.png")
         self._write_png(template_path, template)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1106,11 +1106,11 @@ class TeraboxClickerCoreTests(unittest.TestCase):
                 json.dumps({"instances": existing}), encoding="utf-8"
             )
 
-            saved = TeraboxClicker.update_instances_config(
+            saved = AutoClicker.update_instances_config(
                 [{"device_address": "emulator-test", "scan_interval": 1}],
                 str(config_path),
             )
-            result = TeraboxClicker.read_config(str(config_path))
+            result = AutoClicker.read_config(str(config_path))
 
             self.assertTrue(saved)
             self.assertEqual(
@@ -1122,7 +1122,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         first_image = self._pattern(size=40)
         second_image = np.bitwise_xor(first_image, 255)
         self._write_png(template_path, first_image)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             match_grayscale=False,
@@ -1137,7 +1137,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         os.utime(template_path, ns=(old_mtime + 1_000_000_000,) * 2)
         directory_key = os.path.abspath(template_path.parent)
         next_scan = (
-            TeraboxClicker._template_directory_last_scan[directory_key]
+            AutoClicker._template_directory_last_scan[directory_key]
             + TEMPLATE_MANIFEST_REFRESH_INTERVAL
         )
         with patch("main.time.perf_counter", return_value=next_scan):
@@ -1156,21 +1156,21 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             json.dumps({"template_counts": {"x.png": 0}}), encoding="utf-8"
         )
         path_key = os.path.abspath(config_path)
-        TeraboxClicker._pending_count_deltas[path_key]["template_counts"][
+        AutoClicker._pending_count_deltas[path_key]["template_counts"][
             "x.png"
         ] = 1
-        original_write = TeraboxClicker._atomic_write_config_unlocked
+        original_write = AutoClicker._atomic_write_config_unlocked
 
         with patch.object(
-            TeraboxClicker,
+            AutoClicker,
             "_atomic_write_config_unlocked",
             side_effect=original_write,
         ) as atomic_write:
-            saved = TeraboxClicker.update_instances_config(
+            saved = AutoClicker.update_instances_config(
                 [{"device_address": "emulator-test"}], str(config_path)
             )
 
-        result = TeraboxClicker.read_config(str(config_path))
+        result = AutoClicker.read_config(str(config_path))
         self.assertTrue(saved)
         self.assertEqual(atomic_write.call_count, 1)
         self.assertEqual(result["template_counts"]["x.png"], 1)
@@ -1181,29 +1181,29 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             json.dumps({"template_counts": {"x.png": 0}}), encoding="utf-8"
         )
         path_key = os.path.abspath(config_path)
-        pending = TeraboxClicker._pending_count_deltas[path_key][
+        pending = AutoClicker._pending_count_deltas[path_key][
             "template_counts"
         ]
         pending["x.png"] = 1
 
         with patch.object(
-            TeraboxClicker,
+            AutoClicker,
             "_atomic_write_config_unlocked",
             side_effect=OSError("disk full"),
         ):
-            self.assertFalse(TeraboxClicker.update_instances_config(
+            self.assertFalse(AutoClicker.update_instances_config(
                 [{"device_address": "emulator-test"}], str(config_path)
             ))
 
         self.assertEqual(pending["x.png"], 1)
-        self.assertTrue(TeraboxClicker.update_instances_config(
+        self.assertTrue(AutoClicker.update_instances_config(
             [{"device_address": "emulator-test"}], str(config_path)
         ))
-        result = TeraboxClicker.read_config(str(config_path))
+        result = AutoClicker.read_config(str(config_path))
         self.assertEqual(result["template_counts"]["x.png"], 1)
 
     def test_exec_cooldown_is_not_extended_while_using_fallback(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1227,7 +1227,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(clicker._exec_out_disabled_until, first_deadline)
 
     def test_slow_reconnect_failure_uses_failure_completion_time(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1240,7 +1240,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(clicker._next_reconnect_at, 111.0)
 
     def test_stop_during_initial_connect_cancels_loop_start(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1260,7 +1260,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertFalse(clicker._automatic_loop_active)
 
     def test_stop_returning_from_match_prevents_action(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1284,7 +1284,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         clicker._execute_action.assert_not_called()
 
     def test_wait_interval_is_capped_by_force_and_action_deadlines(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=1,
@@ -1307,7 +1307,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertAlmostEqual(clicker._current_wait_interval(104.5), 0.5)
 
     def test_adaptive_order_is_opt_in_to_preserve_user_priority(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1322,7 +1322,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template = self._pattern(size=40)
         template_path = Path(self.temp_dir, "templates", "periodic.png")
         self._write_png(template_path, template)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1364,7 +1364,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertIn("match.coarse", stages)
 
     def test_roi_fullscreen_fallback_throttle_survives_screen_dirty(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1383,7 +1383,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             self.assertTrue(clicker._roi_full_scan_due("x.png"))
 
     def test_roi_frame_budget_prioritizes_then_round_robins(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1433,7 +1433,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
 
     def test_run_once_limits_roi_fullscreen_fallbacks_to_budget(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1444,7 +1444,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
                 Path(self.temp_dir, "templates", filename),
                 self._pattern(),
             )
-        TeraboxClicker._refresh_template_directory(
+        AutoClicker._refresh_template_directory(
             clicker.template_dir, force=True
         )
         clicker.template_order = order
@@ -1472,7 +1472,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(full_scans, ["a.png", "b.png"])
 
     def test_only_resolution_change_resets_all_roi_state(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1518,7 +1518,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertNotIn(template_path, clicker._template_location_hints)
 
     def test_wait_elapsed_is_not_subtracted_from_deadline_twice(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=1,
@@ -1540,7 +1540,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template = self._pattern(size=40)
         template_path = Path(self.temp_dir, "templates", "strict.png")
         self._write_png(template_path, template)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             match_grayscale=False,
@@ -1571,7 +1571,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template = self._pattern(size=40)
         template_path = Path(self.temp_dir, "templates", "full-roi.png")
         self._write_png(template_path, template)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             match_grayscale=False,
@@ -1602,7 +1602,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         provider.assert_called_once_with()
 
     def test_stop_during_fallback_scan_prevents_final_action(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1639,7 +1639,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         first_image = self._pattern(size=40)
         second_image = np.bitwise_xor(first_image, 255)
         self._write_png(template_path, first_image)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             match_grayscale=False,
@@ -1676,7 +1676,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
                     template_path,
                     ns=(old_mtime + 1_000_000_000,) * 2,
                 )
-                TeraboxClicker._refresh_template_directory(
+                AutoClicker._refresh_template_directory(
                     template_path.parent, force=True
                 )
                 second, _ = clicker._load_template(
@@ -1689,7 +1689,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])
         scaled = clicker._get_scaled_template(cache_key, second)
-        cached_source, cached_scaled = TeraboxClicker._scaled_template_cache[
+        cached_source, cached_scaled = AutoClicker._scaled_template_cache[
             cache_key
         ]
         self.assertIs(cached_source, second)
@@ -1703,7 +1703,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )))
 
     def test_adb_cli_device_list_maps_tcp_port_to_emulator_serial(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
@@ -1734,7 +1734,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         client_class.return_value.devices.assert_not_called()
 
     def test_expired_action_deadline_forces_immediate_loop_wakeup(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=10,
@@ -1753,7 +1753,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
 
     def test_reconnect_deadline_caps_adaptive_loop_sleep(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=5,
@@ -1779,7 +1779,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
 
     def test_roi_fallback_is_unthrottled_when_frame_detection_is_off(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1797,7 +1797,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         template = self._pattern(size=40)
         template_path = Path(self.temp_dir, "templates", "tiny-roi.png")
         self._write_png(template_path, template)
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             match_grayscale=False,
@@ -1819,7 +1819,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_stop_after_first_click_cancels_second_click_immediately(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1843,7 +1843,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertLess(elapsed, 0.2)
 
     def test_stop_during_reconnect_cancels_capture_backends(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1866,7 +1866,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         clicker._capture_ppadb_backend.assert_not_called()
 
     def test_custom_adb_endpoint_is_used_by_cli_and_capture(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-5554",
             host="10.0.0.20",
@@ -1898,7 +1898,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(command[command.index("-s") + 1], "emulator-5554")
 
     def test_local_adb_endpoint_omits_host_flag_for_start_server(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             host="127.0.0.1",
@@ -1931,7 +1931,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
 
     def test_run_once_uses_fresh_time_after_template_scan(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -1992,7 +1992,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
 
     def test_cancel_event_set_during_loop_start_is_not_cleared(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -2097,7 +2097,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
 
     def test_reconnect_backoff_ignores_scan_cadence(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=0.1,
@@ -2113,7 +2113,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
 
     def test_reconnect_backoff_honors_earlier_timeout_deadline(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=0.1,
@@ -2130,7 +2130,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
 
     def test_adb_start_stops_after_cancellation_between_commands(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
@@ -2164,7 +2164,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         frame.start_clicker_loop.assert_not_called()
 
     def test_external_connection_wakes_reconnect_backoff(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             scan_interval=0.1,
@@ -2233,7 +2233,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertGreaterEqual(scan_count, 2)
 
     def test_wake_during_scan_is_not_cleared_before_wait(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=5.0,
@@ -2276,7 +2276,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
     def test_gui_template_save_reports_config_failure(self):
         from gui_app import InstanceTabFrame
 
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -2305,7 +2305,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
 
     def test_stop_during_scan_skips_timeout_callback(self):
         callback = Mock()
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=5.0,
@@ -2326,7 +2326,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         callback.assert_not_called()
 
     def test_cancel_event_interrupts_loop_wait_without_stop_call(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=5.0,
@@ -2404,7 +2404,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         frame.clicker.request_shutdown.assert_called_once_with()
 
     def test_active_cancel_stops_adb_start_between_commands(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
@@ -2429,7 +2429,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertFalse(clicker._loop_worker_active)
 
     def test_active_cancel_interrupts_action_delay(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             logger=lambda _: None,
@@ -2454,7 +2454,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
 
     def test_stop_during_timeout_calculation_skips_callback(self):
         callback = Mock()
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             scan_interval=5.0,
@@ -2488,7 +2488,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
 
     def test_consecutive_match_count_and_callback(self):
         callback = Mock()
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             consecutive_match_threshold=3,
@@ -2524,7 +2524,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
 
     def test_consecutive_match_disabled_when_threshold_zero(self):
         callback = Mock()
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             consecutive_match_threshold=0,
@@ -2537,14 +2537,14 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         callback.assert_not_called()
 
     def test_consecutive_match_config_save_and_load(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="emulator-test",
             consecutive_match_threshold=7,
             logger=lambda _: None,
         )
     def test_multiple_instances_share_same_settings(self):
-        clicker1 = TeraboxClicker(
+        clicker1 = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             scan_interval=3,
@@ -2554,7 +2554,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
         clicker1.save_config(include_templates=False)
 
-        clicker2 = TeraboxClicker(
+        clicker2 = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5557",
             logger=lambda _: None,
@@ -2565,7 +2565,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(clicker2.no_match_timeout, 45)
         self.assertAlmostEqual(clicker2.similarity_threshold, 0.88)
     def test_reset_counts_on_startup_save_and_load(self):
-        clicker1 = TeraboxClicker(
+        clicker1 = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             reset_counts_on_startup=True,
@@ -2574,7 +2574,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertTrue(clicker1.reset_counts_on_startup)
         clicker1.save_config(include_templates=False)
 
-        clicker2 = TeraboxClicker(
+        clicker2 = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5557",
             logger=lambda _: None,
@@ -2594,7 +2594,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         Path(self.temp_dir, "config.json").write_text(
             json.dumps(config), encoding="utf-8"
         )
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             reset_counts_on_startup=True,
@@ -2607,7 +2607,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
     def test_rename_template_success(self):
         template_path = Path(self.temp_dir, "templates", "old_btn.png")
         self._write_png(template_path, self._pattern())
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
@@ -2637,7 +2637,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
     def test_rename_fallback_template_success(self):
         template_path = Path(self.temp_dir, "fallback_templates", "fb_old.png")
         self._write_png(template_path, self._pattern())
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
@@ -2659,7 +2659,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         t2 = Path(self.temp_dir, "templates", "btn2.png")
         self._write_png(t1, self._pattern())
         self._write_png(t2, self._pattern())
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
@@ -2779,7 +2779,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
 
     def test_load_template_missing_file_does_not_log_error(self):
         logs = []
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda msg: logs.append(msg),
@@ -2793,7 +2793,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             self.assertNotIn("템플릿 로드 실패", log)
 
     def test_missing_template_file_auto_pruned_in_scan_loop(self):
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
@@ -2817,15 +2817,15 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         screen3 = screen1.copy()
         screen3[540, 960] = [255, 255, 255]  # Center pixel change
 
-        hash1 = TeraboxClicker._fast_screen_hash(screen1)
-        hash2 = TeraboxClicker._fast_screen_hash(screen2)
-        hash3 = TeraboxClicker._fast_screen_hash(screen3)
+        hash1 = AutoClicker._fast_screen_hash(screen1)
+        hash2 = AutoClicker._fast_screen_hash(screen2)
+        hash3 = AutoClicker._fast_screen_hash(screen3)
 
         self.assertEqual(hash1, hash2)
         # Should be different when content changes
         screen_corner = screen1.copy()
         screen_corner[0, 0] = [100, 100, 100]
-        hash_corner = TeraboxClicker._fast_screen_hash(screen_corner)
+        hash_corner = AutoClicker._fast_screen_hash(screen_corner)
         self.assertNotEqual(hash1, hash_corner)
 
     def test_background_tab_timer_throttling(self):
@@ -2890,8 +2890,8 @@ class TeraboxClickerCoreTests(unittest.TestCase):
             resolve_adb_path("custom", "   ", base_dir=self.temp_dir), default_path
         )
 
-    def test_terabox_clicker_adb_mode_custom_and_config_persistence(self):
-        clicker = TeraboxClicker(
+    def test_auto_clicker_adb_mode_custom_and_config_persistence(self):
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             adb_mode="custom",
             custom_adb_path="D:\\tools\\adb.exe",
@@ -2910,14 +2910,14 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         self.assertEqual(data.get("adb_mode"), "custom")
         self.assertEqual(data.get("custom_adb_path"), "D:\\tools\\adb.exe")
 
-        clicker2 = TeraboxClicker(base_dir=self.temp_dir, logger=lambda _: None)
+        clicker2 = AutoClicker(base_dir=self.temp_dir, logger=lambda _: None)
         clicker2.load_config()
         self.assertEqual(clicker2.adb_mode, "custom")
         self.assertEqual(clicker2.custom_adb_path, "D:\\tools\\adb.exe")
         self.assertEqual(clicker2.adb_path, "D:\\tools\\adb.exe")
 
     def test_apply_settings_updates_adb_mode_and_path(self):
-        clicker = TeraboxClicker(base_dir=self.temp_dir, logger=lambda _: None)
+        clicker = AutoClicker(base_dir=self.temp_dir, logger=lambda _: None)
         default_path = get_default_adb_path(self.temp_dir)
         self.assertEqual(clicker.adb_path, default_path)
 
@@ -2936,7 +2936,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
     def test_validate_adb_executable_checks_file_and_version_output(self):
         fake_adb = Path(self.temp_dir, "custom-adb.exe")
         fake_adb.write_bytes(b"not-really-an-executable")
-        TeraboxClicker._adb_validation_cache.clear()
+        AutoClicker._adb_validation_cache.clear()
         version_result = subprocess.CompletedProcess(
             [str(fake_adb), "version"],
             0,
@@ -2945,7 +2945,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         )
 
         with patch("main.subprocess.run", return_value=version_result) as run:
-            valid, resolved, message = TeraboxClicker.validate_adb_executable(
+            valid, resolved, message = AutoClicker.validate_adb_executable(
                 str(fake_adb)
             )
 
@@ -2955,14 +2955,14 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         run.assert_called_once()
 
         missing = Path(self.temp_dir, "missing-adb.exe")
-        valid, resolved, message = TeraboxClicker.validate_adb_executable(str(missing))
+        valid, resolved, message = AutoClicker.validate_adb_executable(str(missing))
         self.assertFalse(valid)
         self.assertEqual(Path(resolved).resolve(), missing.resolve())
         self.assertIn("찾을 수 없습니다", message)
 
     def test_failed_start_is_recovered_when_another_process_started_server(self):
         messages = []
-        clicker = TeraboxClicker(
+        clicker = AutoClicker(
             base_dir=self.temp_dir,
             port=61337,
             logger=messages.append,
@@ -2989,7 +2989,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         call_lock = threading.Lock()
         start_calls = 0
         clickers = [
-            TeraboxClicker(
+            AutoClicker(
                 base_dir=self.temp_dir,
                 port=61338,
                 logger=lambda _: None,
@@ -3038,7 +3038,7 @@ class TeraboxClickerCoreTests(unittest.TestCase):
         subprocess.run(cleanup_command, capture_output=True, timeout=5)
         messages = []
         clickers = [
-            TeraboxClicker(
+            AutoClicker(
                 adb_path=str(adb_path),
                 base_dir=self.temp_dir,
                 host="127.0.0.1",

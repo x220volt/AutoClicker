@@ -5,11 +5,17 @@
 
 ## [v0.3.11] - 2026-08-25
 
+### 🏷️ Rebranding (프로젝트 명칭 변경)
+- **앱 명칭을 '테라박스클리커'에서 '오토클리커(AutoClicker)'로 변경**:
+  - 핵심 클래스(`AutoClicker`), GUI 창 타이틀(`Auto Clicker Multi-Instance`), 빌드 스펙(`AutoClicker.spec`) 및 단일 실행 파일명(`AutoClicker.exe`) 일괄 변경
+  - 기존 코드와의 하위 호환성을 위해 `TeraboxClicker = AutoClicker` alias 제공
+  - GitHub 원격 저장소 URL(`https://github.com/x220volt/AutoClicker.git`) 동기화
+
 ### 🚀 Packaging & Distribution (패키징 및 배포)
 - **단일 실행 파일(`--onefile`) 패키징 지원**:
-  - PyInstaller 설정을 단일 독립 실행 파일(`TeraboxClicker.exe`) 모드로 전환
+  - PyInstaller 설정을 단일 독립 실행 파일(`AutoClicker.exe`) 모드로 전환
   - 내장 ADB 번들 및 CustomTkinter 리소스를 EXE 내부에 직접 번들링하여 별도 압축 해제나 폴더 유지 없이 단일 파일로 바로 실행 가능
-  - GitHub Actions 워크플로우(`release.yml`) 릴리즈 배포 산출물을 단일 `TeraboxClicker.exe`로 최적화
+  - GitHub Actions 워크플로우(`release.yml`) 릴리즈 배포 산출물을 단일 `AutoClicker.exe`로 최적화
 
 ---
 

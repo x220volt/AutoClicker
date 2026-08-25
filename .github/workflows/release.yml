@@ -42,13 +42,13 @@ jobs:
 
       - name: Build executable with PyInstaller
         run: |
-          pyinstaller --noconfirm TeraboxClicker.spec
+          pyinstaller --noconfirm AutoClicker.spec
 
       - name: Verify executable layout
         shell: pwsh
         run: |
-          if (!(Test-Path "dist/TeraboxClicker.exe")) {
-            throw "Executable dist/TeraboxClicker.exe was not created."
+          if (!(Test-Path "dist/AutoClicker.exe")) {
+            throw "Executable dist/AutoClicker.exe was not created."
           }
 
       - name: Determine Release Tag
@@ -66,7 +66,7 @@ jobs:
         with:
           tag_name: ${{ steps.get_tag.outputs.tag }}
           name: ${{ steps.get_tag.outputs.tag }}
-          files: dist/TeraboxClicker.exe
+          files: dist/AutoClicker.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
