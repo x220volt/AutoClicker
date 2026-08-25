@@ -141,6 +141,18 @@ def draw_korean_banner(width, banner_height, lines):
         return banner
 
 
+def set_opencv_window_title(window_key, unicode_title):
+    """Set Unicode window title on Windows via SetWindowTextW to prevent mojibake."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.FindWindowW(None, window_key)
+            if hwnd:
+                ctypes.windll.user32.SetWindowTextW(hwnd, str(unicode_title))
+        except Exception:
+            pass
+
+
 class TemplateRowWidgets:
     """Container for widgets in a template row, maintaining backward-compatible indexing."""
     def __init__(self, frame, priority, drag, action_btn, delay_btn, count_label, label, del_btn):
@@ -814,9 +826,12 @@ class SettingsWindow(ctk.CTkToplevel):
                     height // 2 if initial_y is None else max(0, min(height - 1, initial_y)),
                 ]
                 banner_h = 65
-                window_name = f"[좌표 선택] 화면 클릭 후 Enter로 확정 - {getattr(self.clicker, 'device_address', '')}"
-                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                cv2.resizeWindow(window_name, width // 2, (height + banner_h) // 2)
+                window_key = f"AutoClicker_PickCoord_{getattr(self.clicker, 'device_address', 'dev')}"
+                window_title = f"[좌표 선택] 화면 클릭 후 Enter로 확정 - {getattr(self.clicker, 'device_address', '')}"
+                window_name = window_key
+                cv2.namedWindow(window_key, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(window_key, width // 2, (height + banner_h) // 2)
+                set_opencv_window_title(window_key, window_title)
 
                 def update_preview():
                     display = screen.copy()
@@ -831,7 +846,8 @@ class SettingsWindow(ctk.CTkToplevel):
                             ("화면 클릭으로 좌표 지정 ➔ Enter/Space: 적용 (취소: 'c', ESC 또는 [X])", (220, 220, 220), 13),
                         ],
                     )
-                    cv2.imshow(window_name, np.vstack([display, banner]))
+                    cv2.imshow(window_key, np.vstack([display, banner]))
+                    set_opencv_window_title(window_key, window_title)
 
                 def on_mouse(event, mouse_x, mouse_y, flags, param):
                     if event == cv2.EVENT_LBUTTONDOWN and 0 <= mouse_y < height and 0 <= mouse_x < width:
@@ -3257,17 +3273,20 @@ class InstanceTabFrame(ctk.CTkFrame):
                     target_pos_y = 100
 
                 banner_height = 65
-                step1_window = (
+                step1_key = f"AutoClicker_Step1_{self.clicker.device_address}"
+                step1_title = (
                     f"[1단계] 템플릿 인식 영역 드래그 선택 "
                     f"({'복구' if is_fallback else '기본'}) - "
                     f"{self.clicker.device_address}"
                 )
+                step1_window = step1_key
                 open_windows.append(step1_window)
                 cv2.namedWindow(step1_window, cv2.WINDOW_NORMAL)
                 cv2.resizeWindow(
                     step1_window, width // 2, (height + banner_height) // 2
                 )
                 cv2.moveWindow(step1_window, target_pos_x, target_pos_y)
+                set_opencv_window_title(step1_window, step1_title)
 
                 roi_drag = {
                     "dragging": False,
@@ -3306,6 +3325,7 @@ class InstanceTabFrame(ctk.CTkFrame):
                         ],
                     )
                     cv2.imshow(step1_window, np.vstack([display, banner]))
+                    set_opencv_window_title(step1_window, step1_title)
 
                 def on_step1_mouse(event, mx, my, flags, param):
                     if (
@@ -3390,17 +3410,20 @@ class InstanceTabFrame(ctk.CTkFrame):
                     roi_x:roi_x + roi_width,
                 ].copy()
                 banner_height = 65
-                step2_window = (
+                step2_key = f"AutoClicker_Step2_{self.clicker.device_address}"
+                step2_title = (
                     f"[2단계] 실제 클릭할 타겟 위치 선택 "
                     f"({'복구' if is_fallback else '기본'}) - "
                     f"{self.clicker.device_address}"
                 )
+                step2_window = step2_key
                 open_windows.append(step2_window)
                 cv2.namedWindow(step2_window, cv2.WINDOW_NORMAL)
                 cv2.resizeWindow(
                     step2_window, width // 2, (height + banner_height) // 2
                 )
                 cv2.moveWindow(step2_window, target_pos_x, target_pos_y)
+                set_opencv_window_title(step2_window, step2_title)
                 default_point = [
                     roi_x + roi_width // 2,
                     roi_y + roi_height // 2,
@@ -3445,6 +3468,7 @@ class InstanceTabFrame(ctk.CTkFrame):
                         ],
                     )
                     cv2.imshow(step2_window, np.vstack([display, banner]))
+                    set_opencv_window_title(step2_window, step2_title)
 
                 def on_mouse(event, mouse_x, mouse_y, flags, param):
                     if (

@@ -108,13 +108,28 @@ def draw_korean_banner(width, banner_height, lines):
         return banner
 
 
+def set_opencv_window_title(window_key, unicode_title):
+    """Set Unicode window title on Windows via SetWindowTextW to prevent mojibake."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.FindWindowW(None, window_key)
+            if hwnd:
+                ctypes.windll.user32.SetWindowTextW(hwnd, str(unicode_title))
+        except Exception:
+            pass
+
+
 def select_template_roi(screen):
     height, width = screen.shape[:2]
     banner_height = 65
-    window_name = "[1단계] 템플릿 인식 영역 드래그 선택 (Enter: 확정 / 취소: c, ESC 또는 [X])"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, width // 2, (height + banner_height) // 2)
-    cv2.moveWindow(window_name, 100, 100)
+    window_key = "AutoClicker_CropTool_Step1"
+    window_title = "[1단계] 템플릿 인식 영역 드래그 선택 (Enter: 다음 단계 / 취소: c, ESC 또는 [X])"
+    window_name = window_key
+    cv2.namedWindow(window_key, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_key, width // 2, (height + banner_height) // 2)
+    cv2.moveWindow(window_key, 100, 100)
+    set_opencv_window_title(window_key, window_title)
 
     roi_drag = {"dragging": False, "start": None, "rect": None}
 
@@ -142,7 +157,8 @@ def select_template_roi(screen):
                 ),
             ],
         )
-        cv2.imshow(window_name, np.vstack([display, banner]))
+        cv2.imshow(window_key, np.vstack([display, banner]))
+        set_opencv_window_title(window_key, window_title)
 
     def on_mouse(event, mx, my, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN and 0 <= my < height and 0 <= mx < width:
@@ -202,16 +218,19 @@ def select_click_point(screen, roi):
     roi_x, roi_y, roi_width, roi_height = map(int, roi)
     height, width = screen.shape[:2]
     banner_height = 65
-    window_name = "[2단계] 실제 클릭할 위치 선택 (기본 중앙: Enter / 취소: c, ESC, [X])"
+    window_key = "AutoClicker_CropTool_Step2"
+    window_title = "[2단계] 실제 클릭할 위치 선택 (기본 중앙: Enter / 취소: c, ESC, [X])"
+    window_name = window_key
     default_point = [
         roi_x + roi_width // 2,
         roi_y + roi_height // 2,
     ]
     selected_point = list(default_point)
 
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, width // 2, (height + banner_height) // 2)
-    cv2.moveWindow(window_name, 100, 100)
+    cv2.namedWindow(window_key, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_key, width // 2, (height + banner_height) // 2)
+    cv2.moveWindow(window_key, 100, 100)
+    set_opencv_window_title(window_key, window_title)
 
     def update_preview():
         display = screen.copy()
@@ -249,7 +268,8 @@ def select_click_point(screen, roi):
                 ),
             ],
         )
-        cv2.imshow(window_name, np.vstack([display, banner]))
+        cv2.imshow(window_key, np.vstack([display, banner]))
+        set_opencv_window_title(window_key, window_title)
 
     def on_mouse(event, mouse_x, mouse_y, flags, param):
         if (
