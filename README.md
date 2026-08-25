@@ -200,7 +200,7 @@
 * **선택적 롤링 성능 계측**: `performance_metrics`를 켜면 캡처·전처리·축소/국소/전체 매칭·액션 시간을 고정 크기 버퍼에 기록하고 `get_performance_stats()`로 확인할 수 있습니다. 평상시에는 계측 오버헤드를 없애기 위해 꺼져 있습니다.
 * **Tkinter UI 스레드 디커플링**: 백그라운드 스레드와 UI 간 `queue.SimpleQueue` 메시지 펌프를 적용하여 프리징과 충돌을 방지합니다.
 
-정확도를 바꾸지 않는 주요 최적화는 기본 활성화됩니다. 고급 사용자는 `config.json`의 `local_verify`, `dynamic_roi`, `roi_full_scan_budget`(프레임당 1개 이상, 기본 2), `frame_change_detection`, `force_scan_interval`, `adaptive_scan_interval`, `max_idle_interval`, `adaptive_template_order`, `capture_backend`(`auto`/`raw`/`png`), `performance_metrics` 값을 인스턴스별로 조정할 수 있습니다.
+정확도를 바꾸지 않는 주요 최적화는 기본 활성화됩니다. 고급 사용자는 GUI 상단의 **'⚙️ 환경 설정'** 팝업 또는 `config.json`을 통해 `local_verify`, `dynamic_roi`, `roi_full_scan_budget`(프레임당 1개 이상, 기본 2), `frame_change_detection`, `force_scan_interval`, `adaptive_scan_interval`, `max_idle_interval`, `adaptive_template_order`, `capture_backend`(`auto`/`raw`/`png`), `performance_metrics` 값을 모든 인스턴스에 공통 적용되는 **전역(글로벌) 설정**으로 손쉽게 조정할 수 있습니다.
 
 ---
 
