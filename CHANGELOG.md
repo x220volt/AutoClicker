@@ -5,6 +5,12 @@
 
 ## [v0.3.11] - 2026-08-25
 
+### 🧩 Architecture & Modularization (아키텍처 모듈화)
+- **단일 거대 파일 구조를 기능별 단위 모듈 패키지(`autoclicker/`)로 전면 분리**:
+  - `autoclicker.core`: 상수(`constants`), 환경 경로(`environment`), 클릭커 코어 엔진(`clicker`)
+  - `autoclicker.gui`: 테마 토큰(`theme`), Win32 한글 렌더링(`win32_utils`), 위젯(`widgets/`), 다이얼로그(`dialogs/`), 탭 프레임(`tab_view`), 메인 윈도우(`main_window`)
+  - 기존 진입점(`main.py`, `gui_app.py`), 113개 단위 테스트, PyInstaller 빌드 호환성 100% 보장
+
 ### 🏷️ Rebranding (프로젝트 명칭 변경)
 - **앱 명칭을 '테라박스클리커'에서 '오토클리커(AutoClicker)'로 변경**:
   - 핵심 클래스(`AutoClicker`), GUI 창 타이틀 및 상단 로고(`Auto Clicker`), 빌드 스펙(`AutoClicker.spec`) 및 단일 실행 파일명(`AutoClicker.exe`) 일괄 변경
