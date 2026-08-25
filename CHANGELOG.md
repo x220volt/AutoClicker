@@ -3,7 +3,7 @@
 모든 주요 변경 사항은 이 문서에 기록됩니다.  
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/) 규칙을 따릅니다.
 
-## [v0.3.11] - 2026-08-25
+## [v0.4.0] - 2026-08-25
 
 ### 🧩 Architecture & Modularization (아키텍처 모듈화)
 - **단일 거대 파일 구조를 기능별 단위 모듈 패키지(`autoclicker/`)로 전면 분리**:

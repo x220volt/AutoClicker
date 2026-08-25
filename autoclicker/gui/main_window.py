@@ -1,10 +1,15 @@
 import os
 import sys
+import queue
 import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
+
+from autoclicker import __version__
+
+VERSION = f"v{__version__}"
 
 from autoclicker.core.constants import (
     CONFIG_FILENAME,
