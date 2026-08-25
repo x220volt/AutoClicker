@@ -3209,6 +3209,7 @@ class InstanceTabFrame(ctk.CTkFrame):
                     target_pos_x = 100
                     target_pos_y = 100
 
+                banner_height = 65
                 step1_window = (
                     f"[Step 1] Select Template Area "
                     f"({'Fallback' if is_fallback else 'Primary'}) - "
@@ -3216,18 +3217,122 @@ class InstanceTabFrame(ctk.CTkFrame):
                 )
                 open_windows.append(step1_window)
                 cv2.namedWindow(step1_window, cv2.WINDOW_NORMAL)
-                cv2.resizeWindow(step1_window, width // 2, height // 2)
-                cv2.moveWindow(step1_window, target_pos_x, target_pos_y)
-                roi = cv2.selectROI(
-                    step1_window, screen, showCrosshair=True, fromCenter=False
+                cv2.resizeWindow(
+                    step1_window, width // 2, (height + banner_height) // 2
                 )
+                cv2.moveWindow(step1_window, target_pos_x, target_pos_y)
+
+                roi_drag = {
+                    "dragging": False,
+                    "start": None,
+                    "rect": None,
+                }
+
+                def update_step1_preview():
+                    display = screen.copy()
+                    rect = roi_drag["rect"]
+                    if rect is not None:
+                        rx, ry, rw, rh = rect
+                        cv2.rectangle(
+                            display,
+                            (rx, ry),
+                            (rx + rw, ry + rh),
+                            (0, 255, 0),
+                            2,
+                        )
+                    banner = np.full(
+                        (banner_height, width, 3), 30, dtype=np.uint8
+                    )
+                    if rect is not None and rect[2] > 0 and rect[3] > 0:
+                        rx, ry, rw, rh = rect
+                        roi_info = f"Selected ROI: ({rx}, {ry}) {rw}x{rh}"
+                    else:
+                        roi_info = "Drag area on screen with mouse"
+                    cv2.putText(
+                        banner,
+                        roi_info,
+                        (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (0, 255, 0), 2, cv2.LINE_AA,
+                    )
+                    cv2.putText(
+                        banner,
+                        "Drag -> Enter/Space: Confirm (Cancel: 'c', ESC or Close [X])",
+                        (15, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
+                        (220, 220, 220), 1, cv2.LINE_AA,
+                    )
+                    cv2.imshow(step1_window, np.vstack([display, banner]))
+
+                def on_step1_mouse(event, mx, my, flags, param):
+                    if (
+                        event == cv2.EVENT_LBUTTONDOWN
+                        and 0 <= my < height
+                        and 0 <= mx < width
+                    ):
+                        roi_drag["dragging"] = True
+                        roi_drag["start"] = (mx, my)
+                        roi_drag["rect"] = (mx, my, 0, 0)
+                        update_step1_preview()
+                    elif event == cv2.EVENT_MOUSEMOVE and roi_drag["dragging"]:
+                        cx = min(max(0, mx), width - 1)
+                        cy = min(max(0, my), height - 1)
+                        sx, sy = roi_drag["start"]
+                        rx = min(sx, cx)
+                        ry = min(sy, cy)
+                        rw = abs(cx - sx)
+                        rh = abs(cy - sy)
+                        roi_drag["rect"] = (rx, ry, rw, rh)
+                        update_step1_preview()
+                    elif event == cv2.EVENT_LBUTTONUP and roi_drag["dragging"]:
+                        roi_drag["dragging"] = False
+                        cx = min(max(0, mx), width - 1)
+                        cy = min(max(0, my), height - 1)
+                        sx, sy = roi_drag["start"]
+                        rx = min(sx, cx)
+                        ry = min(sy, cy)
+                        rw = abs(cx - sx)
+                        rh = abs(cy - sy)
+                        roi_drag["rect"] = (
+                            (rx, ry, rw, rh) if rw > 2 and rh > 2 else None
+                        )
+                        update_step1_preview()
+
+                cv2.setMouseCallback(step1_window, on_step1_mouse)
+                update_step1_preview()
+
+                cancelled_step1 = False
+                while True:
+                    key = cv2.waitKey(30) & 0xFF
+                    if key in (13, 32):
+                        if (
+                            roi_drag["rect"] is not None
+                            and roi_drag["rect"][2] > 0
+                            and roi_drag["rect"][3] > 0
+                        ):
+                            break
+                    if key in (ord("c"), ord("C"), 27):
+                        cancelled_step1 = True
+                        break
+                    try:
+                        if (
+                            cv2.getWindowProperty(
+                                step1_window, cv2.WND_PROP_VISIBLE
+                            ) < 1
+                        ):
+                            cancelled_step1 = True
+                            break
+                    except cv2.error:
+                        cancelled_step1 = True
+                        break
+
                 cv2.destroyWindow(step1_window)
                 open_windows.remove(step1_window)
-                if roi[2] <= 0 or roi[3] <= 0:
+                if cancelled_step1 or roi_drag["rect"] is None:
                     self.log_message("영역 선택 취소됨")
                     return
 
-                roi_x, roi_y, roi_width, roi_height = map(int, roi)
+                roi_x, roi_y, roi_width, roi_height = map(
+                    int, roi_drag["rect"]
+                )
                 crop_img = screen[
                     roi_y:roi_y + roi_height,
                     roi_x:roi_x + roi_width,

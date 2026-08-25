@@ -63,6 +63,90 @@ def save_template(clicker, crop_img, filename, offset):
                 pass
 
 
+def select_template_roi(screen):
+    height, width = screen.shape[:2]
+    banner_height = 65
+    window_name = "1. Select Template Area (Drag area -> Enter / Cancel: c, ESC or Close [X])"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, width // 2, (height + banner_height) // 2)
+    cv2.moveWindow(window_name, 100, 100)
+
+    roi_drag = {"dragging": False, "start": None, "rect": None}
+
+    def update_preview():
+        display = screen.copy()
+        rect = roi_drag["rect"]
+        if rect is not None:
+            rx, ry, rw, rh = rect
+            cv2.rectangle(display, (rx, ry), (rx + rw, ry + rh), (0, 255, 0), 2)
+        banner = np.full((banner_height, width, 3), 30, dtype=np.uint8)
+        if rect is not None and rect[2] > 0 and rect[3] > 0:
+            rx, ry, rw, rh = rect
+            roi_info = f"Selected ROI: ({rx}, {ry}) {rw}x{rh}"
+        else:
+            roi_info = "Drag area on screen with mouse"
+        cv2.putText(banner, roi_info, (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(
+            banner,
+            "Drag -> Enter/Space: Confirm (Cancel: 'c', ESC or Close [X])",
+            (15, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (220, 220, 220), 1, cv2.LINE_AA,
+        )
+        cv2.imshow(window_name, np.vstack([display, banner]))
+
+    def on_mouse(event, mx, my, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN and 0 <= my < height and 0 <= mx < width:
+            roi_drag["dragging"] = True
+            roi_drag["start"] = (mx, my)
+            roi_drag["rect"] = (mx, my, 0, 0)
+            update_preview()
+        elif event == cv2.EVENT_MOUSEMOVE and roi_drag["dragging"]:
+            cx = min(max(0, mx), width - 1)
+            cy = min(max(0, my), height - 1)
+            sx, sy = roi_drag["start"]
+            rx, ry = min(sx, cx), min(sy, cy)
+            rw, rh = abs(cx - sx), abs(cy - sy)
+            roi_drag["rect"] = (rx, ry, rw, rh)
+            update_preview()
+        elif event == cv2.EVENT_LBUTTONUP and roi_drag["dragging"]:
+            roi_drag["dragging"] = False
+            cx = min(max(0, mx), width - 1)
+            cy = min(max(0, my), height - 1)
+            sx, sy = roi_drag["start"]
+            rx, ry = min(sx, cx), min(sy, cy)
+            rw, rh = abs(cx - sx), abs(cy - sy)
+            roi_drag["rect"] = (rx, ry, rw, rh) if rw > 2 and rh > 2 else None
+            update_preview()
+
+    cv2.setMouseCallback(window_name, on_mouse)
+    update_preview()
+    cancelled = False
+    try:
+        while True:
+            key = cv2.waitKey(30) & 0xFF
+            if key in (13, 32):
+                if roi_drag["rect"] is not None and roi_drag["rect"][2] > 0 and roi_drag["rect"][3] > 0:
+                    break
+            if key in (ord("c"), ord("C"), 27):
+                cancelled = True
+                break
+            try:
+                if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                    cancelled = True
+                    break
+            except cv2.error:
+                cancelled = True
+                break
+    finally:
+        try:
+            cv2.destroyWindow(window_name)
+        except cv2.error:
+            pass
+
+    if cancelled or roi_drag["rect"] is None:
+        return None
+    return roi_drag["rect"]
+
+
 def select_click_point(screen, roi):
     roi_x, roi_y, roi_width, roi_height = map(int, roi)
     height, width = screen.shape[:2]
@@ -187,28 +271,8 @@ def main():
                 print("캡처 실패")
                 continue
 
-            height, width = screen.shape[:2]
-            window_name = (
-                "1. Select Template Area "
-                "(Drag & Press Enter / Cancel: c)"
-            )
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(window_name, width // 2, height // 2)
-            cv2.moveWindow(window_name, 100, 100)
-            try:
-                roi = cv2.selectROI(
-                    window_name,
-                    screen,
-                    showCrosshair=True,
-                    fromCenter=False,
-                )
-            finally:
-                try:
-                    cv2.destroyWindow(window_name)
-                except cv2.error:
-                    pass
-
-            if roi[2] <= 0 or roi[3] <= 0:
+            roi = select_template_roi(screen)
+            if roi is None:
                 print("선택 취소됨")
                 continue
 

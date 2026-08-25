@@ -12,9 +12,10 @@
   - GitHub 원격 저장소 URL(`https://github.com/x220volt/AutoClicker.git`) 동기화
 
 ### 🎨 UI/UX Improvements (사용자 경험 개선)
-- **템플릿 등록 위자드 창 위치 고정 (Window Position Persistence)**:
-  - Step 1(템플릿 영역 지정)과 Step 2(클릭 좌표 선택) 창 전환 시 창 위치가 대각선으로 튀거나 이동하지 않도록 메인 프로그램 창 중앙 좌표로 고정(`cv2.moveWindow`)
-  - 화면 전환 시 깜빡임이나 위치 이탈 없이 매끄러운 연속 작업 지원
+- **템플릿 등록 위자드 창 위치 고정 및 닫기[X] 취소 버그 해결**:
+  - OpenCV 내장 `cv2.selectROI`의 닫기 버튼 버그(창 닫기 시 창이 재생성되는 문제)를 해결하기 위해, 정밀 이벤트 감지가 가능한 커스텀 드래그 ROI 선택기 구현
+  - 마우스로 창 우측 상단의 `[X]`(닫기) 버튼을 클릭하거나 `c`, `ESC` 입력 시 즉시 깔끔하게 취소 처리
+  - Step 1과 Step 2 창 크기 및 위치를 완전 동기화하여 전환 시 위치 튐 및 깜빡임 제거
 
 ### 🚀 Packaging & Distribution (패키징 및 배포)
 - **단일 실행 파일(`--onefile`) 패키징 지원**:
