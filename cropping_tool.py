@@ -79,6 +79,7 @@ def select_click_point(screen, roi):
 
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, width // 2, (height + banner_height) // 2)
+    cv2.moveWindow(window_name, 100, 100)
 
     def update_preview():
         display = screen.copy()
@@ -193,6 +194,7 @@ def main():
             )
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(window_name, width // 2, height // 2)
+            cv2.moveWindow(window_name, 100, 100)
             try:
                 roi = cv2.selectROI(
                     window_name,

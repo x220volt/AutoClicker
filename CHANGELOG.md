@@ -11,6 +11,11 @@
   - 기존 코드와의 하위 호환성을 위해 `TeraboxClicker = AutoClicker` alias 제공
   - GitHub 원격 저장소 URL(`https://github.com/x220volt/AutoClicker.git`) 동기화
 
+### 🎨 UI/UX Improvements (사용자 경험 개선)
+- **템플릿 등록 위자드 창 위치 고정 (Window Position Persistence)**:
+  - Step 1(템플릿 영역 지정)과 Step 2(클릭 좌표 선택) 창 전환 시 창 위치가 대각선으로 튀거나 이동하지 않도록 메인 프로그램 창 중앙 좌표로 고정(`cv2.moveWindow`)
+  - 화면 전환 시 깜빡임이나 위치 이탈 없이 매끄러운 연속 작업 지원
+
 ### 🚀 Packaging & Distribution (패키징 및 배포)
 - **단일 실행 파일(`--onefile`) 패키징 지원**:
   - PyInstaller 설정을 단일 독립 실행 파일(`AutoClicker.exe`) 모드로 전환

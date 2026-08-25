@@ -3196,6 +3196,19 @@ class InstanceTabFrame(ctk.CTkFrame):
                     return
 
                 height, width = screen.shape[:2]
+
+                try:
+                    top_win = self.winfo_toplevel()
+                    win_x = top_win.winfo_x()
+                    win_y = top_win.winfo_y()
+                    win_w = top_win.winfo_width()
+                    win_h = top_win.winfo_height()
+                    target_pos_x = max(20, win_x + (win_w - width // 2) // 2)
+                    target_pos_y = max(20, win_y + (win_h - height // 2) // 2)
+                except Exception:
+                    target_pos_x = 100
+                    target_pos_y = 100
+
                 step1_window = (
                     f"[Step 1] Select Template Area "
                     f"({'Fallback' if is_fallback else 'Primary'}) - "
@@ -3204,6 +3217,7 @@ class InstanceTabFrame(ctk.CTkFrame):
                 open_windows.append(step1_window)
                 cv2.namedWindow(step1_window, cv2.WINDOW_NORMAL)
                 cv2.resizeWindow(step1_window, width // 2, height // 2)
+                cv2.moveWindow(step1_window, target_pos_x, target_pos_y)
                 roi = cv2.selectROI(
                     step1_window, screen, showCrosshair=True, fromCenter=False
                 )
@@ -3229,6 +3243,7 @@ class InstanceTabFrame(ctk.CTkFrame):
                 cv2.resizeWindow(
                     step2_window, width // 2, (height + banner_height) // 2
                 )
+                cv2.moveWindow(step2_window, target_pos_x, target_pos_y)
                 default_point = [
                     roi_x + roi_width // 2,
                     roi_y + roi_height // 2,
