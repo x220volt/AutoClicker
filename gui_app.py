@@ -3341,7 +3341,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title(f"Auto Clicker Multi-Instance {VERSION}")
+        self.title(f"Auto Clicker {VERSION}")
         self.geometry("1300x760")
         self.minsize(1050, 600)
         
@@ -3369,7 +3369,7 @@ class App(ctk.CTk):
 
         self.logo_label = ctk.CTkLabel(
             self.top_bar, 
-            text="⚡ Auto Clicker Multi", 
+            text="⚡ Auto Clicker", 
             font=ctk.CTkFont(size=17, weight="bold")
         )
         self.logo_label.pack(side="left", padx=(16, 16), pady=8)

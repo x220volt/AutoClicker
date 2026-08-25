@@ -7,7 +7,7 @@
 
 ### 🏷️ Rebranding (프로젝트 명칭 변경)
 - **앱 명칭을 '테라박스클리커'에서 '오토클리커(AutoClicker)'로 변경**:
-  - 핵심 클래스(`AutoClicker`), GUI 창 타이틀(`Auto Clicker Multi-Instance`), 빌드 스펙(`AutoClicker.spec`) 및 단일 실행 파일명(`AutoClicker.exe`) 일괄 변경
+  - 핵심 클래스(`AutoClicker`), GUI 창 타이틀 및 상단 로고(`Auto Clicker`), 빌드 스펙(`AutoClicker.spec`) 및 단일 실행 파일명(`AutoClicker.exe`) 일괄 변경
   - 기존 코드와의 하위 호환성을 위해 `TeraboxClicker = AutoClicker` alias 제공
   - GitHub 원격 저장소 URL(`https://github.com/x220volt/AutoClicker.git`) 동기화
 

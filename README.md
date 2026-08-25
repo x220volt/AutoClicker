@@ -1,4 +1,4 @@
-# ⚡ Auto Clicker Multi (v0.3.11) 사용 설명서
+# ⚡ Auto Clicker (v0.3.11) 사용 설명서
 
 안드로이드 에뮬레이터(MSI App Player, BlueStacks, LDPlayer, Nox, MuMu, MEmu 등)의 화면을 실시간 캡처 및 템플릿 매칭으로 분석하여 원하는 버튼을 자동으로 탐색, 클릭 및 뒤로가기 동작을 수행하는 **다중 인스턴스 지원 스마트 매크로 프로그램**입니다.
 
