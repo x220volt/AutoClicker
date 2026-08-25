@@ -3324,8 +3324,15 @@ class InstanceTabFrame(ctk.CTkFrame):
                         cancelled_step1 = True
                         break
 
-                cv2.destroyWindow(step1_window)
-                open_windows.remove(step1_window)
+                def safe_close_window(wname):
+                    if wname in open_windows:
+                        open_windows.remove(wname)
+                    try:
+                        cv2.destroyWindow(wname)
+                    except Exception:
+                        pass
+
+                safe_close_window(step1_window)
                 if cancelled_step1 or roi_drag["rect"] is None:
                     self.log_message("영역 선택 취소됨")
                     return
@@ -3423,8 +3430,7 @@ class InstanceTabFrame(ctk.CTkFrame):
                         cancelled = True
                         break
 
-                cv2.destroyWindow(step2_window)
-                open_windows.remove(step2_window)
+                safe_close_window(step2_window)
                 if cancelled:
                     self.log_message("클릭 위치 선택이 취소되었습니다.")
                     return

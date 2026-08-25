@@ -15,6 +15,7 @@
 - **템플릿 등록 위자드 창 위치 고정 및 닫기[X] 취소 버그 해결**:
   - OpenCV 내장 `cv2.selectROI`의 닫기 버튼 버그(창 닫기 시 창이 재생성되는 문제)를 해결하기 위해, 정밀 이벤트 감지가 가능한 커스텀 드래그 ROI 선택기 구현
   - 마우스로 창 우측 상단의 `[X]`(닫기) 버튼을 클릭하거나 `c`, `ESC` 입력 시 즉시 깔끔하게 취소 처리
+  - 창이 이미 닫힌 상태에서 `cv2.destroyWindow` 호출 시 발생하던 `NULL window in function cvDestroyWindow` OpenCV C++ 예외 안전 처리(`safe_close_window`)
   - Step 1과 Step 2 창 크기 및 위치를 완전 동기화하여 전환 시 위치 튐 및 깜빡임 제거
 
 ### 🚀 Packaging & Distribution (패키징 및 배포)
