@@ -63,10 +63,55 @@ def save_template(clicker, crop_img, filename, offset):
                 pass
 
 
+def draw_korean_banner(width, banner_height, lines):
+    """Render crisp Korean and English text lines on an OpenCV banner using PIL."""
+    banner = np.full((banner_height, width, 3), 30, dtype=np.uint8)
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        banner_rgb = cv2.cvtColor(banner, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(banner_rgb)
+        draw = ImageDraw.Draw(pil_img)
+
+        font_candidates = [
+            "C:/Windows/Fonts/malgun.ttf",
+            "C:/Windows/Fonts/malgunbd.ttf",
+            "C:/Windows/Fonts/gulim.ttc",
+            "malgun.ttf",
+        ]
+        chosen_font_path = None
+        for fp in font_candidates:
+            if os.path.exists(fp):
+                chosen_font_path = fp
+                break
+
+        y = 10
+        for text, color_bgr, font_size in lines:
+            try:
+                if chosen_font_path:
+                    font = ImageFont.truetype(chosen_font_path, font_size)
+                else:
+                    font = ImageFont.load_default()
+            except Exception:
+                font = ImageFont.load_default()
+
+            color_rgb = (
+                (color_bgr[2], color_bgr[1], color_bgr[0])
+                if len(color_bgr) == 3
+                else (255, 255, 255)
+            )
+            draw.text((15, y), text, font=font, fill=color_rgb)
+            y += font_size + 8
+
+        result_rgb = np.array(pil_img)
+        return cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+    except Exception:
+        return banner
+
+
 def select_template_roi(screen):
     height, width = screen.shape[:2]
     banner_height = 65
-    window_name = "1. Select Template Area (Drag area -> Enter / Cancel: c, ESC or Close [X])"
+    window_name = "[1단계] 템플릿 인식 영역 드래그 선택 (Enter: 확정 / 취소: c, ESC 또는 [X])"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, width // 2, (height + banner_height) // 2)
     cv2.moveWindow(window_name, 100, 100)
@@ -79,17 +124,23 @@ def select_template_roi(screen):
         if rect is not None:
             rx, ry, rw, rh = rect
             cv2.rectangle(display, (rx, ry), (rx + rw, ry + rh), (0, 255, 0), 2)
-        banner = np.full((banner_height, width, 3), 30, dtype=np.uint8)
         if rect is not None and rect[2] > 0 and rect[3] > 0:
             rx, ry, rw, rh = rect
-            roi_info = f"Selected ROI: ({rx}, {ry}) {rw}x{rh}"
+            roi_info = f"선택 영역: (X={rx}, Y={ry}) 크기={rw}x{rh} 픽셀"
         else:
-            roi_info = "Drag area on screen with mouse"
-        cv2.putText(banner, roi_info, (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
-        cv2.putText(
-            banner,
-            "Drag -> Enter/Space: Confirm (Cancel: 'c', ESC or Close [X])",
-            (15, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (220, 220, 220), 1, cv2.LINE_AA,
+            roi_info = "마우스로 화면에서 인식할 템플릿 영역을 드래그하세요"
+
+        banner = draw_korean_banner(
+            width,
+            banner_height,
+            [
+                (roi_info, (0, 255, 0), 15),
+                (
+                    "영역 드래그 ➔ Enter/Space: 다음 단계 (취소: 'c', ESC 또는 [X] 닫기)",
+                    (220, 220, 220),
+                    13,
+                ),
+            ],
         )
         cv2.imshow(window_name, np.vstack([display, banner]))
 
@@ -151,10 +202,7 @@ def select_click_point(screen, roi):
     roi_x, roi_y, roi_width, roi_height = map(int, roi)
     height, width = screen.shape[:2]
     banner_height = 65
-    window_name = (
-        "2. Select Click Point "
-        "(Click target -> Enter / Default Center: Enter)"
-    )
+    window_name = "[2단계] 실제 클릭할 위치 선택 (기본 중앙: Enter / 취소: c, ESC, [X])"
     default_point = [
         roi_x + roi_width // 2,
         roi_y + roi_height // 2,
@@ -179,33 +227,27 @@ def select_click_point(screen, roi):
         cv2.drawMarker(
             display, (x, y), (0, 0, 255), cv2.MARKER_CROSS, 22, 2
         )
-        banner = np.full((banner_height, width, 3), 30, dtype=np.uint8)
         offset_x, offset_y = x - roi_x, y - roi_y
         position_type = (
-            " [Default Center]"
+            " [기본 중앙 클릭]"
             if selected_point == default_point
-            else " [Custom Target]"
+            else " [사용자 지정 위치]"
         )
-        cv2.putText(
-            banner,
-            f"Click Target: ({x}, {y}) | Offset: "
-            f"({offset_x:+d}, {offset_y:+d}){position_type}",
-            (15, 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            banner,
-            "Click screen -> Enter/Space: Confirm (Cancel: 'c' or ESC)",
-            (15, 52),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.52,
-            (220, 220, 220),
-            1,
-            cv2.LINE_AA,
+        banner = draw_korean_banner(
+            width,
+            banner_height,
+            [
+                (
+                    f"클릭 좌표: ({x}, {y}) | 상대 오프셋: ({offset_x:+d}, {offset_y:+d}){position_type}",
+                    (0, 255, 255),
+                    15,
+                ),
+                (
+                    "화면 클릭으로 위치 지정 ➔ Enter/Space: 저장 완료 (기본 중앙은 바로 Enter)",
+                    (220, 220, 220),
+                    13,
+                ),
+            ],
         )
         cv2.imshow(window_name, np.vstack([display, banner]))
 

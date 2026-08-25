@@ -96,6 +96,51 @@ def get_delay_button_style(delay, delay_type="pre"):
         return "딜레이 0s", COLOR_NEUTRAL, COLOR_NEUTRAL_HOVER
 
 
+def draw_korean_banner(width, banner_height, lines):
+    """Render crisp Korean and English text lines on an OpenCV banner using PIL."""
+    banner = np.full((banner_height, width, 3), 30, dtype=np.uint8)
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        banner_rgb = cv2.cvtColor(banner, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(banner_rgb)
+        draw = ImageDraw.Draw(pil_img)
+
+        font_candidates = [
+            "C:/Windows/Fonts/malgun.ttf",
+            "C:/Windows/Fonts/malgunbd.ttf",
+            "C:/Windows/Fonts/gulim.ttc",
+            "malgun.ttf",
+        ]
+        chosen_font_path = None
+        for fp in font_candidates:
+            if os.path.exists(fp):
+                chosen_font_path = fp
+                break
+
+        y = 10
+        for text, color_bgr, font_size in lines:
+            try:
+                if chosen_font_path:
+                    font = ImageFont.truetype(chosen_font_path, font_size)
+                else:
+                    font = ImageFont.load_default()
+            except Exception:
+                font = ImageFont.load_default()
+
+            color_rgb = (
+                (color_bgr[2], color_bgr[1], color_bgr[0])
+                if len(color_bgr) == 3
+                else (255, 255, 255)
+            )
+            draw.text((15, y), text, font=font, fill=color_rgb)
+            y += font_size + 8
+
+        result_rgb = np.array(pil_img)
+        return cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+    except Exception:
+        return banner
+
+
 class TemplateRowWidgets:
     """Container for widgets in a template row, maintaining backward-compatible indexing."""
     def __init__(self, frame, priority, drag, action_btn, delay_btn, count_label, label, del_btn):
@@ -768,22 +813,24 @@ class SettingsWindow(ctk.CTkToplevel):
                     width // 2 if initial_x is None else max(0, min(width - 1, initial_x)),
                     height // 2 if initial_y is None else max(0, min(height - 1, initial_y)),
                 ]
-                window_name = "[Pick Target Coordinates] Click point -> Enter to confirm"
+                banner_h = 65
+                window_name = f"[좌표 선택] 화면 클릭 후 Enter로 확정 - {getattr(self.clicker, 'device_address', '')}"
                 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                cv2.resizeWindow(window_name, width // 2, (height + 60) // 2)
+                cv2.resizeWindow(window_name, width // 2, (height + banner_h) // 2)
 
                 def update_preview():
                     display = screen.copy()
                     x, y = selected_pt
                     cv2.circle(display, (x, y), 8, (0, 0, 255), 2)
                     cv2.drawMarker(display, (x, y), (0, 0, 255), cv2.MARKER_CROSS, 22, 2)
-                    banner = np.full((60, width, 3), 30, dtype=np.uint8)
-                    cv2.putText(banner, f"Selected: ({x}, {y})", (15, 25),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-                    cv2.putText(banner,
-                                "Click screen -> Enter/Space: Confirm, 'c'/ESC: Cancel",
-                                (15, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                                (220, 220, 220), 1, cv2.LINE_AA)
+                    banner = draw_korean_banner(
+                        width,
+                        banner_h,
+                        [
+                            (f"선택 좌표: (X={x}, Y={y})", (0, 255, 255), 15),
+                            ("화면 클릭으로 좌표 지정 ➔ Enter/Space: 적용 (취소: 'c', ESC 또는 [X])", (220, 220, 220), 13),
+                        ],
+                    )
                     cv2.imshow(window_name, np.vstack([display, banner]))
 
                 def on_mouse(event, mouse_x, mouse_y, flags, param):
@@ -3211,8 +3258,8 @@ class InstanceTabFrame(ctk.CTkFrame):
 
                 banner_height = 65
                 step1_window = (
-                    f"[Step 1] Select Template Area "
-                    f"({'Fallback' if is_fallback else 'Primary'}) - "
+                    f"[1단계] 템플릿 인식 영역 드래그 선택 "
+                    f"({'복구' if is_fallback else '기본'}) - "
                     f"{self.clicker.device_address}"
                 )
                 open_windows.append(step1_window)
@@ -3240,25 +3287,23 @@ class InstanceTabFrame(ctk.CTkFrame):
                             (0, 255, 0),
                             2,
                         )
-                    banner = np.full(
-                        (banner_height, width, 3), 30, dtype=np.uint8
-                    )
                     if rect is not None and rect[2] > 0 and rect[3] > 0:
                         rx, ry, rw, rh = rect
-                        roi_info = f"Selected ROI: ({rx}, {ry}) {rw}x{rh}"
+                        roi_info = f"선택 영역: (X={rx}, Y={ry}) 크기={rw}x{rh} 픽셀"
                     else:
-                        roi_info = "Drag area on screen with mouse"
-                    cv2.putText(
-                        banner,
-                        roi_info,
-                        (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                        (0, 255, 0), 2, cv2.LINE_AA,
-                    )
-                    cv2.putText(
-                        banner,
-                        "Drag -> Enter/Space: Confirm (Cancel: 'c', ESC or Close [X])",
-                        (15, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
-                        (220, 220, 220), 1, cv2.LINE_AA,
+                        roi_info = "마우스로 화면에서 인식할 템플릿 영역을 드래그하세요"
+
+                    banner = draw_korean_banner(
+                        width,
+                        banner_height,
+                        [
+                            (roi_info, (0, 255, 0), 15),
+                            (
+                                "영역 드래그 ➔ Enter/Space: 다음 단계 (취소: 'c', ESC 또는 [X])",
+                                (220, 220, 220),
+                                13,
+                            ),
+                        ],
                     )
                     cv2.imshow(step1_window, np.vstack([display, banner]))
 
@@ -3346,8 +3391,8 @@ class InstanceTabFrame(ctk.CTkFrame):
                 ].copy()
                 banner_height = 65
                 step2_window = (
-                    f"[Step 2] Select Click Target "
-                    f"({'Fallback' if is_fallback else 'Primary'}) - "
+                    f"[2단계] 실제 클릭할 타겟 위치 선택 "
+                    f"({'복구' if is_fallback else '기본'}) - "
                     f"{self.clicker.device_address}"
                 )
                 open_windows.append(step2_window)
@@ -3377,27 +3422,27 @@ class InstanceTabFrame(ctk.CTkFrame):
                         display, (x, y), (0, 0, 255),
                         cv2.MARKER_CROSS, 22, 2
                     )
-                    banner = np.full(
-                        (banner_height, width, 3), 30, dtype=np.uint8
-                    )
                     offset_x, offset_y = x - roi_x, y - roi_y
                     position_type = (
-                        " [Default Center]"
+                        " [기본 중앙 클릭]"
                         if selected_point == default_point
-                        else " [Custom Target]"
+                        else " [사용자 지정 위치]"
                     )
-                    cv2.putText(
-                        banner,
-                        f"Target: ({x}, {y}) | Offset: "
-                        f"({offset_x:+d}, {offset_y:+d}){position_type}",
-                        (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                        (0, 255, 255), 2, cv2.LINE_AA,
-                    )
-                    cv2.putText(
-                        banner,
-                        "Click screen -> Enter/Space: Confirm (Cancel: 'c' or ESC)",
-                        (15, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
-                        (220, 220, 220), 1, cv2.LINE_AA,
+                    banner = draw_korean_banner(
+                        width,
+                        banner_height,
+                        [
+                            (
+                                f"클릭 좌표: ({x}, {y}) | 상대 오프셋: ({offset_x:+d}, {offset_y:+d}){position_type}",
+                                (0, 255, 255),
+                                15,
+                            ),
+                            (
+                                "화면 클릭으로 위치 지정 ➔ Enter/Space: 저장 완료 (기본 중앙은 바로 Enter)",
+                                (220, 220, 220),
+                                13,
+                            ),
+                        ],
                     )
                     cv2.imshow(step2_window, np.vstack([display, banner]))
 
@@ -3891,7 +3936,7 @@ class App(ctk.CTk):
                 count_dict = frame.template_count_labels
             for label in count_dict.values():
                 if label and label.winfo_exists():
-                    label.configure(text="Clicks: 0")
+                    label.configure(text="0회")
 
     def update_template_count_for_all(self, filename, count, is_fallback):
         for frame in tuple(self.tab_frames.values()):
@@ -3902,7 +3947,7 @@ class App(ctk.CTk):
             )
             label = labels.get(filename)
             if label is not None and label.winfo_exists():
-                label.configure(text=f"Clicks: {count}")
+                label.configure(text=f"{count}회")
 
     def start_all_clickers(self):
         self._start_all_generation += 1
