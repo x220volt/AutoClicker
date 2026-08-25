@@ -271,3 +271,8 @@ pyinstaller AutoClicker.spec --noconfirm
 * **Pillow (PIL)**: Historical Permission Notice and Disclaimer (HPND)
 * **pure-python-adb**: MIT License (Copyright (c) 2018 Swind Zheng)
 
+### 3) 본 프로젝트 라이선스
+* **Auto Clicker**: **MIT License** (Copyright (c) 2026 Auto Clicker Contributors)
+* 상업적 이용, 수정, 배포 및 사적 사용이 완전히 자유로운 오픈소스 소프트웨어입니다. 전문은 [LICENSE](LICENSE) 파일을 참조하세요.
+
+
