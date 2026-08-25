@@ -18,9 +18,10 @@
   - Step 1과 Step 2 창 크기 및 위치를 완전 동기화하여 전환 시 위치 튐 및 깜빡임 제거
 
 ### 🚀 Packaging & Distribution (패키징 및 배포)
-- **단일 실행 파일(`--onefile`) 패키징 지원**:
+- **단일 실행 파일(`--onefile`) 패키징 지원 및 임시 폴더 삭제 오류 해결**:
   - PyInstaller 설정을 단일 독립 실행 파일(`AutoClicker.exe`) 모드로 전환
   - 내장 ADB 번들 및 CustomTkinter 리소스를 EXE 내부에 직접 번들링하여 별도 압축 해제나 폴더 유지 없이 단일 파일로 바로 실행 가능
+  - 백그라운드 ADB 데몬이 PyInstaller 임시 폴더(`_MEIxxxxxx`)를 잠그면서 앱 종료 시 발생하던 `Failed to remove temporary directory` 오류를 원천 차단하기 위해, ADB를 `%LOCALAPPDATA%\AutoClicker\ADB` 영구 경로로 자동 추출하여 실행하도록 개선
   - GitHub Actions 워크플로우(`release.yml`) 릴리즈 배포 산출물을 단일 `AutoClicker.exe`로 최적화
 
 ---
