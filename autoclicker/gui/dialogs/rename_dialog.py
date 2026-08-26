@@ -47,6 +47,7 @@ from autoclicker.gui.theme import (
     get_delay_button_style,
 )
 from autoclicker.gui.win32_utils import draw_korean_banner, set_opencv_window_title
+from autoclicker.gui.widgets.tooltip import TemplatePreviewTooltip
 
 class RenameTemplateWindow(ctk.CTkToplevel):
     """Dialog for renaming a template filename."""

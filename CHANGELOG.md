@@ -3,6 +3,20 @@
 모든 주요 변경 사항은 이 문서에 기록됩니다.  
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/) 규칙을 따릅니다.
 
+## [v0.4.1] - 2026-08-26
+
+### 🐛 Bug Fixes (버그 수정)
+- **인스턴스 추가 다이얼로그 `AutoClicker` NameError 수정**:
+  - `autoclicker.gui.dialogs.instance_dialog`에서 디바이스 자동 감지 시 `AutoClicker` 클래스 import 누락으로 발생하던 예외 해결
+- **템플릿 이름 변경 다이얼로그 `TemplatePreviewTooltip` NameError 수정**:
+  - `autoclicker.gui.dialogs.rename_dialog`에서 이름 변경 완료 후 툴팁 숨김 처리 시 `TemplatePreviewTooltip` import 누락으로 발생하던 예외 해결
+- **설정 다이얼로그 누락 import 보완**:
+  - `autoclicker.gui.dialogs.settings_dialog`에서 `ExitStack` 및 `LicenseNoticeWindow` import 구문 추가
+- **템플릿 행 우클릭 컨텍스트 메뉴 바인딩 영역 확장**:
+  - 템플릿 목록 행의 카운트 라벨 영역 우클릭 시에도 컨텍스트 메뉴가 정상 노출되도록 이벤트 바인딩 보강
+
+---
+
 ## [v0.4.0] - 2026-08-25
 
 ### 🧩 Architecture & Modularization (아키텍처 모듈화)

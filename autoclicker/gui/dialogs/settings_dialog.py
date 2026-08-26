@@ -1,6 +1,7 @@
 import os
 import sys
 import threading
+from contextlib import ExitStack
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -47,6 +48,7 @@ from autoclicker.gui.theme import (
     get_delay_button_style,
 )
 from autoclicker.gui.win32_utils import draw_korean_banner, set_opencv_window_title
+from autoclicker.gui.dialogs.license_dialog import LicenseNoticeWindow
 
 class SettingsWindow(ctk.CTkToplevel):
     def __init__(self, parent_frame):

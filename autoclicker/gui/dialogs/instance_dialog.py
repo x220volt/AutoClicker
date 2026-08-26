@@ -20,6 +20,7 @@ from autoclicker.core.constants import (
     DEFAULT_RESET_COUNTS_ON_STARTUP,
 )
 from autoclicker.core.environment import get_default_adb_path, resolve_adb_path
+from autoclicker.core.clicker import AutoClicker
 from autoclicker.gui.theme import (
     COLOR_PRIMARY,
     COLOR_PRIMARY_HOVER,

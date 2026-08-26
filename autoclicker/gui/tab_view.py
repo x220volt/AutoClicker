@@ -1231,7 +1231,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             pop_y = event.y_root if hasattr(event, "y_root") and event.y_root > 0 else self.winfo_pointery()
             menu.show(pop_x, pop_y)
 
-        for target in (row_frame, label, priority_label, drag_handle):
+        for target in (row_frame, label, priority_label, drag_handle, count_label):
             target.bind("<Button-3>", show_context_menu)
             target.bind("<Button-2>", show_context_menu)
 
