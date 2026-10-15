@@ -3,6 +3,7 @@ import sys
 import threading
 import time
 import math
+import re
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -85,6 +86,10 @@ class InstanceTabFrame(ctk.CTkFrame):
         self._log_line_count = 1
         self._log_buffer = []
         self._log_flush_scheduled = False
+        self._log_press_pos = None
+        self._flashing_row = None
+        self._flash_restore_id = None
+        self._hovered_template_link = None
         self._drag_positions = []
         self._timer_render_state = {}
 
@@ -255,6 +260,7 @@ class InstanceTabFrame(ctk.CTkFrame):
         self.log_textbox.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
         self.log_textbox.insert("0.0", f"Initialized Tab [{self.tab_name}] for ADB device [{self.clicker.device_address}]\n")
         self.log_textbox.configure(state="disabled")
+        self._setup_log_hyperlinks()
 
         # Right Column: Active & Fallback Templates Frame
         self.templates_main_frame = ctk.CTkFrame(self.body_frame, fg_color="transparent")
@@ -568,7 +574,9 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         try:
             self.log_textbox.configure(state="normal")
+            start_index = self.log_textbox._textbox.index("end-1c")
             self.log_textbox.insert("end", combined)
+            self._apply_template_links(start_index, combined)
             self._log_line_count += lines_count
             if self._log_line_count > 150:
                 self.log_textbox.delete("1.0", "51.0")
@@ -577,6 +585,272 @@ class InstanceTabFrame(ctk.CTkFrame):
             self.log_textbox.configure(state="disabled")
         except Exception:
             pass
+
+    def _setup_log_hyperlinks(self):
+        try:
+            tb = self.log_textbox._textbox
+            tb.tag_config("tpl_link", foreground="#60A5FA", underline=True)
+            tb.bind("<ButtonPress-1>", self._on_log_press, add="+")
+            tb.bind("<ButtonRelease-1>", self._on_log_release, add="+")
+            tb.bind("<Motion>", self._on_log_motion, add="+")
+            tb.bind("<Leave>", self._on_log_leave, add="+")
+        except Exception:
+            pass
+
+    def _on_log_press(self, event):
+        self._log_press_pos = (event.x, event.y)
+
+    def _on_log_release(self, event):
+        press_pos = getattr(self, "_log_press_pos", None)
+        self._log_press_pos = None
+        if not press_pos:
+            return
+        dx = abs(event.x - press_pos[0])
+        dy = abs(event.y - press_pos[1])
+        if dx > 6 or dy > 6:
+            return  # User was drag-selecting text
+
+        try:
+            idx = self.log_textbox._textbox.index(f"@{event.x},{event.y}")
+            tags = self.log_textbox._textbox.tag_names(idx)
+            for tag in tags:
+                if tag.startswith("tpl_target::"):
+                    filename = tag[len("tpl_target::") :]
+                    self.navigate_to_template(filename)
+                    break
+        except Exception:
+            pass
+
+    def _on_log_motion(self, event):
+        try:
+            idx = self.log_textbox._textbox.index(f"@{event.x},{event.y}")
+            tags = self.log_textbox._textbox.tag_names(idx)
+            hovered_fn = None
+            for t in tags:
+                if t.startswith("tpl_target::"):
+                    hovered_fn = t[len("tpl_target::") :]
+                    break
+
+            if hovered_fn:
+                self.log_textbox._textbox.config(cursor="hand2")
+                if getattr(self, "_hovered_template_link", None) != hovered_fn:
+                    self._hovered_template_link = hovered_fn
+                    image_path = self._resolve_template_path(hovered_fn)
+                    if image_path and os.path.exists(image_path):
+                        tooltip = TemplatePreviewTooltip.get_instance(self.winfo_toplevel())
+                        tooltip.schedule_show(
+                            self.log_textbox,
+                            image_path,
+                            f"{hovered_fn} (클릭하여 이동)",
+                        )
+            else:
+                self.log_textbox._textbox.config(cursor="")
+                if getattr(self, "_hovered_template_link", None) is not None:
+                    self._hovered_template_link = None
+                    TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).cancel()
+        except Exception:
+            pass
+
+    def _on_log_leave(self, event=None):
+        try:
+            self.log_textbox._textbox.config(cursor="")
+            self._hovered_template_link = None
+            TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).cancel()
+        except Exception:
+            pass
+
+    def _apply_template_links(self, start_index, text):
+        if not text:
+            return
+
+        known_templates = set()
+        if hasattr(self, "clicker"):
+            if getattr(self.clicker, "template_order", None):
+                known_templates.update(self.clicker.template_order)
+            if getattr(self.clicker, "fallback_template_order", None):
+                known_templates.update(self.clicker.fallback_template_order)
+        if getattr(self, "template_row_widgets", None):
+            known_templates.update(self.template_row_widgets.keys())
+        if getattr(self, "fallback_template_row_widgets", None):
+            known_templates.update(self.fallback_template_row_widgets.keys())
+
+        sorted_known = sorted([k for k in known_templates if k], key=len, reverse=True)
+        pattern_parts = [re.escape(k) for k in sorted_known]
+        pattern_parts.append(r"[^\s:()\[\]\'\",\n\r]+\.png")
+
+        try:
+            pattern = re.compile(r"(" + r"|".join(pattern_parts) + r")", re.IGNORECASE)
+        except Exception:
+            pattern = re.compile(r"([^\s:()\[\]\'\",\n\r]+\.png)", re.IGNORECASE)
+
+        tb = self.log_textbox._textbox
+        for match in pattern.finditer(text):
+            filename = match.group(1)
+            s_idx = f"{start_index}+{match.start()}c"
+            e_idx = f"{start_index}+{match.end()}c"
+            tb.tag_add("tpl_link", s_idx, e_idx)
+            tb.tag_add(f"tpl_target::{filename}", s_idx, e_idx)
+
+    def _resolve_template_path(self, filename):
+        if not filename or not hasattr(self, "clicker"):
+            return None
+        if filename in getattr(self.clicker, "fallback_template_order", []) or filename in getattr(self, "fallback_template_row_widgets", {}):
+            fb_path = os.path.join(self.clicker.fallback_template_dir, filename)
+            if os.path.exists(fb_path):
+                return fb_path
+        p_path = os.path.join(self.clicker.template_dir, filename)
+        if os.path.exists(p_path):
+            return p_path
+        fb_path = os.path.join(self.clicker.fallback_template_dir, filename)
+        if os.path.exists(fb_path):
+            return fb_path
+        return None
+
+    def navigate_to_template(self, filename: str):
+        if self._destroyed or not self.winfo_exists():
+            return
+
+        TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
+
+        target_fn = None
+        is_fallback = False
+
+        if filename in self.template_row_widgets:
+            target_fn = filename
+            is_fallback = False
+        elif filename in self.fallback_template_row_widgets:
+            target_fn = filename
+            is_fallback = True
+        else:
+            fn_lower = filename.lower()
+            for k in self.template_row_widgets:
+                if k.lower() == fn_lower:
+                    target_fn = k
+                    is_fallback = False
+                    break
+            if target_fn is None:
+                for k in self.fallback_template_row_widgets:
+                    if k.lower() == fn_lower:
+                        target_fn = k
+                        is_fallback = True
+                        break
+
+        if target_fn is None:
+            for k in getattr(self.clicker, "template_order", []):
+                if k.lower() == filename.lower():
+                    target_fn = k
+                    is_fallback = False
+                    break
+            if target_fn is None:
+                for k in getattr(self.clicker, "fallback_template_order", []):
+                    if k.lower() == filename.lower():
+                        target_fn = k
+                        is_fallback = True
+                        break
+
+        if target_fn is None:
+            return
+
+        if is_fallback:
+            self.template_tabview.set("⚡ 미매칭 템플릿")
+            search_text = self.fallback_search_var.get().strip().lower()
+            if search_text and search_text not in target_fn.lower():
+                self.clear_search(is_fallback=True)
+            scroll_frame = self.fallback_templates_frame
+        else:
+            self.template_tabview.set("📋 기본 템플릿")
+            search_text = self.primary_search_var.get().strip().lower()
+            if search_text and search_text not in target_fn.lower():
+                self.clear_search(is_fallback=False)
+            scroll_frame = self.templates_frame
+
+        def _do_scroll_and_highlight():
+            if self._destroyed or not self.winfo_exists():
+                return
+            target_row = (
+                self.fallback_template_row_widgets.get(target_fn)
+                if is_fallback
+                else self.template_row_widgets.get(target_fn)
+            )
+            if not target_row:
+                return
+            row_frame = (
+                target_row[0]
+                if isinstance(target_row, (list, tuple)) or hasattr(target_row, "__getitem__")
+                else getattr(target_row, "frame", None)
+            )
+            if not row_frame or not row_frame.winfo_exists():
+                return
+
+            self._scroll_template_into_view(scroll_frame, row_frame)
+            self._flash_template_row(row_frame)
+
+        self.update_idletasks()
+        _do_scroll_and_highlight()
+        self.after(50, _do_scroll_and_highlight)
+
+    def _scroll_template_into_view(self, scrollable_frame, target_widget):
+        try:
+            scrollable_frame.update_idletasks()
+            canvas = getattr(scrollable_frame, "_parent_canvas", None)
+            if not canvas or not canvas.winfo_exists():
+                return
+            bbox = canvas.bbox("all")
+            if not bbox:
+                return
+            total_height = max(1, bbox[3] - bbox[1])
+            vis_height = canvas.winfo_height()
+            target_y = target_widget.winfo_y()
+            target_h = target_widget.winfo_height()
+            offset = target_y - (vis_height - target_h) / 2
+            fraction = max(0.0, min(1.0, offset / total_height))
+            canvas.yview_moveto(fraction)
+        except Exception:
+            pass
+
+    def _flash_template_row(self, row_frame):
+        if not row_frame or not row_frame.winfo_exists():
+            return
+
+        prev_row = getattr(self, "_flashing_row", None)
+        if prev_row and prev_row.winfo_exists() and prev_row != row_frame:
+            try:
+                prev_row.configure(fg_color="transparent", border_width=0)
+            except Exception:
+                pass
+
+        self._flashing_row = row_frame
+
+        try:
+            row_frame.configure(
+                fg_color="#1E3A8A",
+                border_width=1,
+                border_color="#3B82F6",
+                corner_radius=RADIUS_SM,
+            )
+        except Exception:
+            pass
+
+        restore_id = getattr(self, "_flash_restore_id", None)
+        if restore_id is not None:
+            try:
+                self.after_cancel(restore_id)
+            except Exception:
+                pass
+
+        def _restore():
+            self._flash_restore_id = None
+            if self._destroyed or not self.winfo_exists():
+                return
+            if row_frame.winfo_exists():
+                try:
+                    row_frame.configure(fg_color="transparent", border_width=0)
+                except Exception:
+                    pass
+            if getattr(self, "_flashing_row", None) == row_frame:
+                self._flashing_row = None
+
+        self._flash_restore_id = self.after(1500, _restore)
 
     def on_template_match(self, filename, count, is_fallback):
         self.app_owner.post_to_ui(self.clear_warning_ui)
@@ -1080,6 +1354,14 @@ class InstanceTabFrame(ctk.CTkFrame):
     def refresh_templates(self):
         if self._destroyed or not self.winfo_exists():
             return
+
+        if getattr(self, "_flash_restore_id", None) is not None:
+            try:
+                self.after_cancel(self._flash_restore_id)
+            except Exception:
+                pass
+            self._flash_restore_id = None
+        self._flashing_row = None
 
         TemplatePreviewTooltip.get_instance(self.winfo_toplevel()).hide()
         self.clicker.load_config()
