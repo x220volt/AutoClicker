@@ -36,22 +36,13 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Run unit tests
-        shell: bash
+      - name: Run core unit tests
         run: |
-          set +e
-          OUTPUT=$(python -m unittest test_core.py test_runtime.py -v 2>&1)
-          EXIT_CODE=$?
-          echo "$OUTPUT"
-          if [ $EXIT_CODE -ne 0 ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            echo "$OUTPUT" > test_failure_log.txt
-            git add test_failure_log.txt
-            git commit -m "ci: test failure log"
-            git push -f origin HEAD:test-log
-          fi
-          exit $EXIT_CODE
+          python -m unittest test_core.py
+
+      - name: Run runtime unit tests
+        run: |
+          python -m unittest test_runtime.py
 
       - name: Build executable with PyInstaller
         run: |
