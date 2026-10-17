@@ -30,11 +30,15 @@ from cropping_tool import normalize_filename, save_template
 
 class AutoClickerCoreTests(unittest.TestCase):
     def setUp(self):
+        AutoClicker._server_retry_after.clear()
+        AutoClicker._adb_validation_cache.clear()
         self.temp_dir = tempfile.mkdtemp(prefix="auto-clicker-test-")
         Path(self.temp_dir, "templates").mkdir()
         Path(self.temp_dir, "fallback_templates").mkdir()
 
     def tearDown(self):
+        AutoClicker._server_retry_after.clear()
+        AutoClicker._adb_validation_cache.clear()
         AutoClicker._flush_pending_counts(
             os.path.join(self.temp_dir, "config.json")
         )
@@ -260,6 +264,7 @@ class AutoClickerCoreTests(unittest.TestCase):
             device_address="127.0.0.1:5555",
             logger=lambda _: None,
         )
+        clicker._probe_adb_server = Mock(return_value=True)
         command_result = subprocess.CompletedProcess([], 0, "", "")
         clicker._run_adb = Mock(return_value=command_result)
 
@@ -2193,6 +2198,7 @@ class AutoClickerCoreTests(unittest.TestCase):
         )
 
     def test_adb_start_stops_after_cancellation_between_commands(self):
+        AutoClicker._server_retry_after.clear()
         clicker = AutoClicker(
             base_dir=self.temp_dir,
             device_address="127.0.0.1:5555",

@@ -37,17 +37,8 @@ jobs:
           pip install pyinstaller
 
       - name: Run core unit tests
-        shell: bash
         run: |
-          set +e
-          OUTPUT=$(python -m unittest test_core.py -v 2>&1)
-          EXIT_CODE=$?
-          echo "$OUTPUT"
-          if [ $EXIT_CODE -ne 0 ]; then
-            FAILURES=$(echo "$OUTPUT" | grep -E "^(FAIL|ERROR):" | head -n 5)
-            echo "::error title=CoreTestsFailed::$FAILURES"
-          fi
-          exit $EXIT_CODE
+          python -m unittest test_core.py
 
       - name: Run runtime unit tests
         run: |
