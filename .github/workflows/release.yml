@@ -37,8 +37,17 @@ jobs:
           pip install pyinstaller
 
       - name: Run unit tests
+        shell: bash
         run: |
-          python -m unittest test_core.py test_runtime.py
+          set +e
+          OUTPUT=$(python -m unittest test_core.py test_runtime.py -v 2>&1)
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+          echo "### 🧪 Unit Tests Output" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          echo "$OUTPUT" | tail -n 60 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          exit $EXIT_CODE
 
       - name: Build executable with PyInstaller
         run: |
