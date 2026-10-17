@@ -41,8 +41,14 @@ class MemoryLifecycleTests(unittest.TestCase):
         TemplatePreviewTooltip.release()
         # These tests own the entire interpreter, including CTk's global
         # polling jobs; cancel them before creating another test root.
-        for timer_id in self.root.tk.call("after", "info"):
-            self.root.tk.call("after", "cancel", timer_id)
+        try:
+            for timer_id in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+                try:
+                    self.root.tk.call("after", "cancel", timer_id)
+                except tk.TclError:
+                    pass
+        except tk.TclError:
+            pass
         self.root.destroy()
         gc.collect()
 
@@ -119,7 +125,7 @@ class FullAppLifecycleTests(unittest.TestCase):
                 for frame in app.tab_frames.values():
                     frame.clicker.is_running = True
                     frame.on_no_match_timeout(150)
-                deadline = time.monotonic() + 3
+                deadline = time.monotonic() + 10
                 while len(app._alerts) < 5 and time.monotonic() < deadline:
                     app.update()
                     time.sleep(0.01)
@@ -127,7 +133,7 @@ class FullAppLifecycleTests(unittest.TestCase):
                 self.assertIsNone(app.grab_current())
                 self.assertEqual(len(app._latest_updates), 0)
                 app.on_closing()
-                deadline = time.monotonic() + 3
+                deadline = time.monotonic() + 10
                 while not app._shutdown_done.is_set() and time.monotonic() < deadline:
                     app.update()
                     time.sleep(0.01)

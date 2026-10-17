@@ -50,8 +50,8 @@ class HangMonitor:
         self.state = state
 
     def _watch(self):
-        last_report = 0.0
-        while not self.stop.wait(1):
+        last_report = float("-inf")
+        while not self.stop.wait(0.5):
             now = time.monotonic()
             if now - self.last_beat > 5 and now - last_report > 30:
                 last_report = now

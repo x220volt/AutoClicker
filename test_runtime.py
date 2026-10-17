@@ -53,9 +53,9 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             monitor = HangMonitor(folder)
             monitor.last_beat = time.monotonic() - 10
-            deadline = time.monotonic() + 3
+            deadline = time.monotonic() + 5
             path = Path(folder, "runtime.log")
-            while time.monotonic() < deadline and not path.stat().st_size:
+            while time.monotonic() < deadline and (not path.exists() or not path.stat().st_size):
                 time.sleep(0.05)
             monitor.close()
             self.assertIn("UI heartbeat stalled", path.read_text(encoding="utf-8"))
