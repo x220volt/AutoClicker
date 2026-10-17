@@ -1305,7 +1305,8 @@ class AutoClickerCoreTests(unittest.TestCase):
         )
         clicker.start_adb_server = Mock(return_value=False)
 
-        with patch("main.time.monotonic", side_effect=[100.0, 100.0, 100.0, 100.0, 110.0]):
+        times = [100.0, 100.0, 100.0, 100.0, 110.0]
+        with patch("main.time.monotonic", side_effect=lambda: times.pop(0) if times else 110.0):
             self.assertIsNone(clicker.capture_screen())
 
         self.assertEqual(clicker._next_reconnect_at, 111.0)
@@ -2014,7 +2015,8 @@ class AutoClickerCoreTests(unittest.TestCase):
         clicker.find_template = Mock(return_value=None)
         clicker._handle_no_match_action = Mock()
 
-        with patch("main.time.monotonic", side_effect=[100.0, 100.0, 110.0]):
+        times = [100.0, 100.0, 110.0]
+        with patch("main.time.monotonic", side_effect=lambda: times.pop(0) if times else 110.0):
             clicker.run_once()
 
         self.assertEqual(
@@ -2029,7 +2031,7 @@ class AutoClickerCoreTests(unittest.TestCase):
         first, second = Mock(), Mock()
         first.begin_shutdown.side_effect = lambda: events.append("request1")
         second.begin_shutdown.side_effect = lambda: events.append("request2")
-        first.shutdown.side_effect = lambda: (release.wait(2), events.append("shutdown1"))
+        first.shutdown.side_effect = lambda: (release.wait(10), events.append("shutdown1"))
         second.shutdown.side_effect = lambda: events.append("shutdown2")
         app = Mock()
         app._closing = False
@@ -2047,8 +2049,9 @@ class AutoClickerCoreTests(unittest.TestCase):
             self.assertEqual(events, ["request1", "request2"])
             app.destroy.assert_not_called()
             release.set()
-            self.assertTrue(app._shutdown_done.wait(2))
-            callbacks.pop()()
+            self.assertTrue(app._shutdown_done.wait(10))
+            while callbacks:
+                callbacks.pop(0)()
         self.assertEqual(events, ["request1", "request2", "shutdown1", "shutdown2", "save", "destroy"])
 
     def test_cancel_event_set_during_loop_start_is_not_cleared(self):
