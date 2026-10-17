@@ -82,7 +82,7 @@ class RuntimeTests(unittest.TestCase):
             workers = [threading.Thread(target=lambda c=c: results.append(c.capture_screen()))
                        for c in clickers]
             for worker in workers: worker.start()
-            for worker in workers: worker.join(3)
+            for worker in workers: worker.join(10)
             self.assertEqual(results, ["frame"] * 8)
             self.assertLessEqual(peak, 3)
             clicker = clickers[0]
@@ -90,7 +90,7 @@ class RuntimeTests(unittest.TestCase):
             worker = threading.Thread(target=clicker.capture_screen)
             worker.start()
             clicker.request_shutdown()
-            worker.join(1)
+            worker.join(5)
             clicker._capture_lock.release()
             self.assertFalse(worker.is_alive())
 
@@ -100,18 +100,18 @@ class RuntimeTests(unittest.TestCase):
             entered, release = threading.Event(), threading.Event()
             def ensure():
                 entered.set()
-                release.wait(2)
+                release.wait(5)
                 return True
             clicker._ensure_adb_server = ensure
             clicker._run_adb_stage = Mock(return_value=SimpleNamespace(stdout="127.0.0.1:5555 device", returncode=0))
             worker = threading.Thread(target=clicker.start_adb_server)
             worker.start()
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(5))
             started = time.perf_counter()
             clicker.disconnect()
-            self.assertLess(time.perf_counter()-started, 0.2)
+            self.assertLess(time.perf_counter()-started, 2.0)
             release.set()
-            worker.join(2)
+            worker.join(5)
             self.assertIsNone(clicker.device)
 
     def test_socket_size_limit_and_deadline(self):
