@@ -51,7 +51,20 @@ class CTKContextMenu:
         self._bind_id = toplevel_parent.bind(
             "<Button-1>", lambda e: self._check_click_outside(e), add="+"
         )
+        self.window.bind("<Destroy>", self._on_destroy, add="+")
         self.window.bind("<FocusOut>", lambda e: CTKContextMenu.close_active())
+
+    def _on_destroy(self, event):
+        if event.widget is not self.window:
+            return
+        if self._bind_id is not None:
+            try:
+                self._toplevel.unbind("<Button-1>", self._bind_id)
+            except tk.TclError:
+                pass
+            self._bind_id = None
+        if CTKContextMenu._active_menu is self.window:
+            CTKContextMenu._active_menu = None
 
     def _check_click_outside(self, event):
         if not self.window.winfo_exists():

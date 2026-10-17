@@ -51,6 +51,75 @@ class AutoClickerCoreTests(unittest.TestCase):
         rng = np.random.default_rng(12345)
         return rng.integers(0, 256, (size, size, 3), dtype=np.uint8)
 
+    def test_grayscale_cache_retains_only_requested_mode(self):
+        path = Path(self.temp_dir, "templates", "lazy.png")
+        source = self._pattern(32)
+        self._write_png(path, source)
+        AutoClicker.invalidate_template_cache(path)
+        gray, _ = AutoClicker._load_template_direct(str(path), grayscale=True)
+        key = os.path.abspath(path)
+        self.assertNotIn((key, False), AutoClicker._template_cache)
+        np.testing.assert_array_equal(gray, cv2.cvtColor(source, cv2.COLOR_BGR2GRAY))
+        pyramid = AutoClicker._get_scaled_template((key, True), gray)
+        color, _ = AutoClicker._load_template_direct(str(path), grayscale=False)
+        np.testing.assert_array_equal(color, source)
+        self.assertIs(AutoClicker._get_scaled_template((key, True), gray), pyramid)
+        self.assertEqual(gray.nbytes, source.nbytes // 3)
+
+    def test_capture_socket_handles_fragmented_status_and_timeout(self):
+        clicker = AutoClicker(base_dir=self.temp_dir, logger=lambda _: None)
+        source = self._pattern(32)
+        _, encoded = cv2.imencode(".png", source)
+        sock = MagicMock()
+        sock.recv.side_effect = [b"O", b"KAY", b"OK", b"AY", encoded.tobytes(), b""]
+        with patch("main.socket.socket", return_value=sock):
+            image, failure = clicker._capture_direct_socket("emulator-test", "png", False)
+        self.assertIsNone(failure)
+        np.testing.assert_array_equal(image, source)
+        sock.recv.side_effect = [b"OKAY", b"OKAY", encoded.tobytes(), socket.timeout()]
+        with patch("main.socket.socket", return_value=sock):
+            image, failure = clicker._capture_direct_socket("emulator-test", "png", False)
+        self.assertIsNone(image)
+        self.assertEqual(failure, "transport")
+        self.assertEqual(sock.close.call_count, 2)
+
+    def test_context_menu_destroy_removes_parent_callback_once(self):
+        from autoclicker.gui.widgets.context_menu import CTKContextMenu
+        menu = CTKContextMenu.__new__(CTKContextMenu)
+        menu.window = Mock()
+        menu._toplevel = Mock()
+        menu._bind_id = "callback-id"
+        CTKContextMenu._active_menu = menu.window
+        menu._on_destroy(Mock(widget=Mock()))
+        menu._toplevel.unbind.assert_not_called()
+        menu._on_destroy(Mock(widget=menu.window))
+        menu._on_destroy(Mock(widget=menu.window))
+        menu._toplevel.unbind.assert_called_once_with("<Button-1>", "callback-id")
+        self.assertIsNone(CTKContextMenu._active_menu)
+
+    def test_pending_logs_are_bounded_and_multiline_is_trimmed(self):
+        from collections import deque
+        from types import SimpleNamespace
+        from autoclicker.gui.tab_view import InstanceTabFrame
+        frame = SimpleNamespace(
+            _destroyed=False, _log_lock=threading.Lock(),
+            _log_buffer=deque(maxlen=150), _log_flush_scheduled=False,
+            app_owner=Mock(), _flush_log_buffer=Mock(),
+            winfo_exists=lambda: True, log_textbox=Mock(),
+            _apply_template_links=Mock(), _prune_log_tags=Mock(), _log_line_count=1,
+        )
+        for i in range(1000):
+            InstanceTabFrame.log_message(frame, f"line {i}\nsecond line")
+        self.assertEqual(len(frame._log_buffer), 150)
+        frame.app_owner.post_to_ui.assert_called_once()
+        frame.log_textbox._textbox.index.side_effect = ["151.0", "301.0"]
+        InstanceTabFrame._flush_log_buffer(frame)
+        frame.log_textbox.delete.assert_called_once_with("1.0", "151.0")
+        self.assertEqual(frame._log_line_count, 150)
+        self.assertFalse(frame._log_buffer)
+        InstanceTabFrame.log_message(frame, "next")
+        self.assertEqual(frame.app_owner.post_to_ui.call_count, 2)
+
     def test_config_is_validated_and_template_order_is_deduplicated(self):
         template_path = Path(self.temp_dir, "templates", "UPPER.PNG")
         self._write_png(template_path, self._pattern())
@@ -110,6 +179,7 @@ class AutoClickerCoreTests(unittest.TestCase):
                 screen, str(template_path), threshold=0.99,
                 filename="pattern.png"
             )
+            self.assertEqual(fromfile.call_count, 1)
             clicker.match_grayscale = False
             third = clicker.find_template(
                 screen, str(template_path), threshold=0.99,
@@ -120,7 +190,8 @@ class AutoClickerCoreTests(unittest.TestCase):
         self.assertEqual(first[:2], (99, 0))
         self.assertEqual(second[:2], (99, 0))
         self.assertEqual(third[:2], (99, 0))
-        self.assertEqual(fromfile.call_count, 1)
+        # Switching modes lazily loads the other representation once.
+        self.assertEqual(fromfile.call_count, 2)
 
     def test_flat_template_uses_stable_matching_method(self):
         template = np.full((8, 8, 3), 255, dtype=np.uint8)
@@ -675,7 +746,7 @@ class AutoClickerCoreTests(unittest.TestCase):
 
         mock_device = Mock()
         connection = MagicMock()
-        connection.read_all.return_value = png_data
+        connection.socket.recv.side_effect = [png_data, b""]
         mock_device.create_connection.return_value = connection
         clicker.device = mock_device
 
@@ -688,7 +759,7 @@ class AutoClickerCoreTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result.shape, (100, 80, 3))
-        mock_device.create_connection.assert_called_once_with(timeout=ADB_COMMAND_TIMEOUT)
+        self.assertLessEqual(mock_device.create_connection.call_args.kwargs["timeout"], ADB_COMMAND_TIMEOUT)
         connection.send.assert_called_once_with("shell:/system/bin/screencap -p")
 
     def test_config_cache_avoids_redundant_reads(self):
@@ -959,7 +1030,7 @@ class AutoClickerCoreTests(unittest.TestCase):
         device = Mock()
         device.serial = "emulator-5554"
         connection = MagicMock()
-        connection.read_all.return_value = encoded.tobytes()
+        connection.socket.recv.side_effect = [encoded.tobytes(), b""]
         device.create_connection.return_value = connection
         clicker.device = device
         proc = subprocess.CompletedProcess([], 0, b"corrupt-png", b"")
@@ -973,7 +1044,7 @@ class AutoClickerCoreTests(unittest.TestCase):
             command[1:3], ["-P", str(clicker.port)]
         )
         self.assertEqual(command[command.index("-s") + 1], "emulator-5554")
-        device.create_connection.assert_called_once_with(timeout=ADB_COMMAND_TIMEOUT)
+        self.assertLessEqual(device.create_connection.call_args.kwargs["timeout"], ADB_COMMAND_TIMEOUT)
 
     def test_capture_direct_socket_success(self):
         clicker = AutoClicker(
@@ -1234,7 +1305,7 @@ class AutoClickerCoreTests(unittest.TestCase):
         )
         clicker.start_adb_server = Mock(return_value=False)
 
-        with patch("main.time.monotonic", side_effect=[100.0, 110.0]):
+        with patch("main.time.monotonic", side_effect=[100.0, 100.0, 100.0, 100.0, 110.0]):
             self.assertIsNone(clicker.capture_screen())
 
         self.assertEqual(clicker._next_reconnect_at, 111.0)
@@ -1943,7 +2014,7 @@ class AutoClickerCoreTests(unittest.TestCase):
         clicker.find_template = Mock(return_value=None)
         clicker._handle_no_match_action = Mock()
 
-        with patch("main.time.monotonic", side_effect=[100.0, 110.0]):
+        with patch("main.time.monotonic", side_effect=[100.0, 100.0, 110.0]):
             clicker.run_once()
 
         self.assertEqual(
@@ -1953,43 +2024,32 @@ class AutoClickerCoreTests(unittest.TestCase):
 
     def test_gui_close_joins_workers_before_final_config_save(self):
         from gui_app import App
-
         events = []
-        first = Mock()
-        second = Mock()
+        release = threading.Event()
+        first, second = Mock(), Mock()
         first.begin_shutdown.side_effect = lambda: events.append("request1")
         second.begin_shutdown.side_effect = lambda: events.append("request2")
-        first.shutdown.side_effect = lambda: events.append("shutdown1")
+        first.shutdown.side_effect = lambda: (release.wait(2), events.append("shutdown1"))
         second.shutdown.side_effect = lambda: events.append("shutdown2")
         app = Mock()
         app._closing = False
         app._start_all_generation = 0
+        app._retiring = set()
+        app.tk.call.return_value = ()
+        app._shutdown_done = threading.Event()
         app.tab_frames = {"one": first, "two": second}
-        app._ui_pump_id = "ui"
-        app._timer_pump_id = "timer"
-        app.save_app_config.side_effect = lambda: events.append("save")
+        callbacks = []
+        app.after.side_effect = lambda delay, callback: callbacks.append(callback)
         app.destroy.side_effect = lambda: events.append("destroy")
-
-        with patch(
-            "gui_app.TemplatePreviewTooltip.get_instance"
-        ) as tooltip_instance:
-            tooltip_instance.return_value.hide.side_effect = (
-                lambda: events.append("hide")
-            )
+        with patch("gui_app.TemplatePreviewTooltip.release"), patch.object(
+                AutoClicker, "update_instances_config", side_effect=lambda *a, **k: events.append("save")):
             App.on_closing(app)
-
-        self.assertEqual(
-            events,
-            [
-                "hide",
-                "request1",
-                "request2",
-                "shutdown1",
-                "shutdown2",
-                "save",
-                "destroy",
-            ],
-        )
+            self.assertEqual(events, ["request1", "request2"])
+            app.destroy.assert_not_called()
+            release.set()
+            self.assertTrue(app._shutdown_done.wait(2))
+            callbacks.pop()()
+        self.assertEqual(events, ["request1", "request2", "shutdown1", "shutdown2", "save", "destroy"])
 
     def test_cancel_event_set_during_loop_start_is_not_cleared(self):
         clicker = AutoClicker(
@@ -2373,7 +2433,7 @@ class AutoClickerCoreTests(unittest.TestCase):
         frame._loop_generation = 3
         frame.clicker.is_running = True
         callbacks = []
-        frame.app_owner.post_to_ui.side_effect = callbacks.append
+        frame.app_owner.post_latest.side_effect = lambda key, callback: callbacks.append(callback)
 
         InstanceTabFrame.on_no_match_timeout(frame, 5)
         self.assertEqual(len(callbacks), 1)

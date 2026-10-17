@@ -1,3 +1,6 @@
+from contextlib import contextmanager
+from functools import wraps
+import tempfile
 import cv2
 import numpy as np
 
@@ -147,6 +150,21 @@ def _get_current_app_dir():
     return APP_DIR
 
 
+def serialized_action(method):
+    @wraps(method)
+    def run(self, *args, **kwargs):
+        if not self._action_lock.acquire(blocking=False):
+            return False
+        self._diagnostic_stage = method.__name__
+        self._diagnostic_started = time.monotonic()
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._diagnostic_stage = "idle"
+            self._action_lock.release()
+    return run
+
+
 class AutoClicker:
     """Thread-safe ADB screen matcher used by both the CLI and GUI."""
 
@@ -183,6 +201,8 @@ class AutoClicker:
     _adb_server_locks = {}
     _adb_validation_lock = threading.Lock()
     _adb_validation_cache = {}
+    _capture_gates = {}
+    _server_retry_after = {}
     def __init__(
         self,
         adb_path=None,
@@ -369,6 +389,15 @@ class AutoClicker:
         self._active_loop_cancel_event = None
         self._loop_worker_active = False
         self._device_lock = threading.RLock()
+        self._connection_lock = threading.Lock()
+        self._connection_epoch = 0
+        self._action_lock = threading.Lock()
+        self._capture_lock = threading.Lock()
+        self._capture_context = threading.local()
+        self._diagnostic_stage = "idle"
+        self._diagnostic_started = time.monotonic()
+        self._sockets_lock = threading.Lock()
+        self._active_sockets = set()
         self._loop_state_lock = threading.RLock()
         self._seen_template_directory_generations = {}
 
@@ -1067,13 +1096,11 @@ class AutoClicker:
 
     @classmethod
     def _drop_template_cache_entries_unlocked(cls, absolute_path):
-        for cache_key in tuple(cls._template_cache):
-            cached_path = (
-                cache_key[0] if isinstance(cache_key, tuple) else cache_key
-            )
-            if cached_path == absolute_path:
-                cls._template_cache.pop(cache_key, None)
-                cls._scaled_template_cache.pop(cache_key, None)
+        # Each path has at most two modes; avoid scanning the entire cache
+        # for every changed file during a directory refresh.
+        for cache_key in (absolute_path, (absolute_path, False), (absolute_path, True)):
+            cls._template_cache.pop(cache_key, None)
+            cls._scaled_template_cache.pop(cache_key, None)
 
     @classmethod
     def _refresh_template_directory(cls, directory, force=False):
@@ -1606,15 +1633,15 @@ class AutoClicker:
             ):
                 raise ValueError("이미지 디코딩 결과가 비어 있습니다.")
 
-            template_gray = cv2.cvtColor(template_color, cv2.COLOR_BGR2GRAY)
-            method_color = (
-                cv2.TM_SQDIFF_NORMED
-                if float(template_color.std()) < 1e-6
-                else cv2.TM_CCOEFF_NORMED
+            # Preserve the existing BGR-to-gray rounding, but retain only the
+            # requested mode. Color matching can populate its own entry lazily.
+            template = (
+                cv2.cvtColor(template_color, cv2.COLOR_BGR2GRAY)
+                if use_grayscale else template_color
             )
-            method_gray = (
+            method = (
                 cv2.TM_SQDIFF_NORMED
-                if float(template_gray.std()) < 1e-6
+                if float(template.std()) < 1e-6
                 else cv2.TM_CCOEFF_NORMED
             )
 
@@ -1630,20 +1657,12 @@ class AutoClicker:
                     ):
                         return current[1], current[2]
                     return None, None
-                cls._scaled_template_cache.pop((absolute_path, False), None)
-                cls._scaled_template_cache.pop((absolute_path, True), None)
-                cls._template_cache[(absolute_path, False)] = (
-                    generation,
-                    template_color,
-                    method_color,
-                )
-                cls._template_cache[(absolute_path, True)] = (
-                    generation,
-                    template_gray,
-                    method_gray,
-                )
-            template = template_gray if use_grayscale else template_color
-            method = method_gray if use_grayscale else method_color
+                # Another instance may have decoded this mode while we worked.
+                current = cls._template_cache.get(cache_key)
+                if current is not None and current[0] == generation:
+                    return current[1], current[2]
+                cls._scaled_template_cache.pop(cache_key, None)
+                cls._template_cache[cache_key] = (generation, template, method)
         except Exception:
             template, method = None, None
             with cls._template_cache_lock:
@@ -2299,6 +2318,7 @@ class AutoClicker:
             return self.go_back()
         return False
 
+    @serialized_action
     def run_once(self):
         """Capture once, scan templates, and perform at most one action."""
         self._reset_roi_full_scan_frame()
@@ -2427,6 +2447,7 @@ class AutoClicker:
         self._record_performance("scan.total", cycle_started)
         return False
 
+    @serialized_action
     def execute_template(self, filename, is_fallback=False):
         """Find a specific template on screen and execute its configured action once."""
         if self.device is None and not self.start_adb_server():
@@ -2528,6 +2549,8 @@ class AutoClicker:
         return {}
 
     def _run_adb(self, args, timeout=ADB_COMMAND_TIMEOUT, check=False, text=True):
+        if getattr(self._capture_context, "deadline", None) is not None:
+            timeout = min(timeout, self._capture_remaining())
         cmd = [self.adb_path]
         if (
             "start-server" not in args
@@ -2704,7 +2727,11 @@ class AutoClicker:
             or bool(os.path.dirname(str(self.adb_path)))
         )
         if path_requires_validation:
-            valid, resolved_path, message = self.validate_adb_executable(self.adb_path)
+            if getattr(self._capture_context, "deadline", None) is not None:
+                valid, resolved_path, message = self.validate_adb_executable(
+                    self.adb_path, timeout=min(ADB_VERSION_TIMEOUT, self._capture_remaining()))
+            else:
+                valid, resolved_path, message = self.validate_adb_executable(self.adb_path)
             if not valid:
                 self.log(f"ADB 실행 파일 검증 실패: {message}")
                 return False
@@ -2712,11 +2739,14 @@ class AutoClicker:
 
         host = str(self.host or "127.0.0.1").strip().lower()
         server_lock = self._get_adb_server_lock(host, self.port)
-        with server_lock:
-            if self._operation_cancelled():
+        with self._cancellable_lock(server_lock) as acquired:
+            if not acquired or self._operation_cancelled():
                 return False
             if self._probe_adb_server():
+                self._server_retry_after.pop((host, self.port), None)
                 return True
+            if time.monotonic() < self._server_retry_after.get((host, self.port), 0):
+                return False
             if host not in ("127.0.0.1", "localhost"):
                 self.log(f"원격 ADB 서버에 연결할 수 없습니다: {self.host}:{self.port}")
                 return False
@@ -2756,6 +2786,7 @@ class AutoClicker:
                         self.log("다른 스레드/프로세스가 시작한 ADB 서버를 확인했습니다.")
                     return True
 
+            self._server_retry_after[(host, self.port)] = time.monotonic() + random.uniform(3, 5)
             self.log("ADB 서버 시작 재시도 한도를 초과했습니다.")
             return False
 
@@ -2873,7 +2904,10 @@ class AutoClicker:
 
     def start_adb_server(self):
         """Start ADB and bind only to a device confirmed by adb devices."""
-        with self._device_lock:
+        with self._cancellable_lock(self._connection_lock) as acquired:
+            if not acquired:
+                return False
+            epoch = self._connection_epoch
             self.log(f"ADB 연결 준비: {self.adb_path}")
             try:
                 if not self._ensure_adb_server():
@@ -2939,8 +2973,11 @@ class AutoClicker:
                     else None
                 )
 
-                self.client = client
-                self.device = target
+                with self._device_lock:
+                    if epoch != self._connection_epoch or self._operation_cancelled():
+                        return False
+                    self.client = client
+                    self.device = target
                 if target is None:
                     self.log(
                         f"장치를 찾을 수 없습니다: {self.device_address}"
@@ -2966,8 +3003,57 @@ class AutoClicker:
     def disconnect(self):
         self.stop_loop()
         with self._device_lock:
+            self._connection_epoch += 1
             self.device = None
             self.client = None
+        self._cancel_capture()
+
+    def _cancel_capture(self):
+        with self._sockets_lock:
+            sockets = tuple(self._active_sockets)
+        for sock in sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    @contextmanager
+    def _cancellable_lock(self, lock):
+        acquired = False
+        try:
+            while not self._operation_cancelled():
+                if getattr(self._capture_context, "deadline", None) is not None:
+                    self._capture_remaining()
+                if lock.acquire(timeout=0.05):
+                    acquired = True
+                    break
+            yield acquired
+        finally:
+            if acquired:
+                lock.release()
+
+    def _capture_remaining(self):
+        deadline = getattr(self._capture_context, "deadline", None)
+        remaining = ADB_COMMAND_TIMEOUT if deadline is None else deadline - time.monotonic()
+        epoch = getattr(self._capture_context, "epoch", self._connection_epoch)
+        if remaining <= 0 or self._operation_cancelled() or epoch != self._connection_epoch:
+            raise TimeoutError("Capture cancelled or deadline exceeded")
+        return remaining
+
+    def _read_capture_payload(self, sock):
+        payload = bytearray()
+        while True:
+            sock.settimeout(self._capture_remaining())
+            chunk = sock.recv(65536)
+            if not chunk:
+                return payload
+            if len(payload) + len(chunk) > 64 * 1024 * 1024:
+                raise OSError("Capture exceeds 64 MiB limit")
+            payload.extend(chunk)
 
     @staticmethod
     def _decode_png_screencap(payload, use_grayscale):
@@ -3037,41 +3123,43 @@ class AutoClicker:
         port = int(self.port) if self.port else 5037
         started_at = time.perf_counter()
         sock = None
+        own_deadline = getattr(self._capture_context, "deadline", None) is None
+        if own_deadline:
+            self._capture_context.deadline = time.monotonic() + ADB_COMMAND_TIMEOUT
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(ADB_COMMAND_TIMEOUT)
+            with self._sockets_lock:
+                self._active_sockets.add(sock)
+            sock.settimeout(self._capture_remaining())
             sock.connect((host, port))
 
             # 1. Transport to device serial
             transport_cmd = f"host:transport:{serial}"
             sock.sendall(f"{len(transport_cmd):04x}{transport_cmd}".encode("ascii"))
-            status = sock.recv(4)
+            sock.settimeout(self._capture_remaining())
+            status = self._recv_adb_exact(sock, 4)
             if status != b"OKAY":
                 return None, "transport"
 
             # 2. Request exec screencap
             exec_cmd = "exec:screencap" if backend == "raw" else "exec:screencap -p"
             sock.sendall(f"{len(exec_cmd):04x}{exec_cmd}".encode("ascii"))
-            status = sock.recv(4)
+            sock.settimeout(self._capture_remaining())
+            status = self._recv_adb_exact(sock, 4)
             if status != b"OKAY":
                 return None, "transport"
 
             # 3. Read stream bytes directly
-            chunks = []
-            while True:
-                try:
-                    chunk = sock.recv(65536)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                except socket.timeout:
-                    break
-            payload = b"".join(chunks)
+            payload = self._read_capture_payload(sock)
         except (OSError, socket.error):
             self._record_performance("capture.socket", started_at)
             return None, "transport"
         finally:
+            if own_deadline:
+                self._capture_context.deadline = None
             if sock is not None:
+                with self._sockets_lock:
+                    self._active_sockets.discard(sock)
                 try:
                     sock.close()
                 except Exception:
@@ -3100,38 +3188,86 @@ class AutoClicker:
             command.append("-p")
         started_at = time.perf_counter()
         try:
-            proc = subprocess.run(
-                command,
-                capture_output=True,
-                timeout=ADB_COMMAND_TIMEOUT,
-                **self._subprocess_kwargs(),
-            )
+            with tempfile.TemporaryFile() as output:
+                proc = subprocess.run(
+                    command, stdout=output, stderr=subprocess.DEVNULL,
+                    timeout=self._capture_remaining(), **self._subprocess_kwargs())
+                size = output.tell()
+                if size > 64 * 1024 * 1024:
+                    return None, "decode"
+                output.seek(0)
+                payload = output.read()
+                # CompletedProcess mocks may supply stdout directly.
+                if not payload and isinstance(proc.stdout, bytes):
+                    payload = proc.stdout
         except (OSError, subprocess.SubprocessError):
             self._record_performance("capture.exec", started_at)
             return None, "transport"
         self._record_performance("capture.exec", started_at)
-        if proc.returncode != 0 or not proc.stdout:
+        if proc.returncode != 0 or not payload or len(payload) > 64 * 1024 * 1024:
             return None, "transport"
 
         decode_started = time.perf_counter()
         if backend == "raw":
-            image = self._decode_raw_screencap(proc.stdout, use_grayscale)
+            image = self._decode_raw_screencap(payload, use_grayscale)
         else:
-            image = self._decode_png_screencap(proc.stdout, use_grayscale)
+            image = self._decode_png_screencap(payload, use_grayscale)
         self._record_performance("capture.decode", decode_started)
         return image, None if image is not None else "decode"
 
     def _capture_ppadb_backend(self, device, use_grayscale):
         """Use ppadb transport with a real socket timeout for PNG fallback."""
-        connection = device.create_connection(timeout=ADB_COMMAND_TIMEOUT)
+        connection = device.create_connection(timeout=self._capture_remaining())
         with connection:
-            connection.send("shell:/system/bin/screencap -p")
-            payload = bytes(connection.read_all())
+            sock = connection.socket
+            with self._sockets_lock:
+                self._active_sockets.add(sock)
+            try:
+                connection.send("shell:/system/bin/screencap -p")
+                payload = bytes(self._read_capture_payload(sock))
+            finally:
+                with self._sockets_lock:
+                    self._active_sockets.discard(sock)
         if payload and len(payload) > 5 and payload[5] == 0x0D:
             payload = payload.replace(b"\r\n", b"\n")
         return self._decode_png_screencap(payload, use_grayscale)
 
     def capture_screen(self, grayscale=None):
+        deadline = time.monotonic() + ADB_COMMAND_TIMEOUT
+        epoch = self._connection_epoch
+        self._capture_context.epoch = epoch
+        key = (str(self.host).strip().lower(), self.port)
+        with self._adb_server_locks_guard:
+            gate = self._capture_gates.setdefault(key, threading.BoundedSemaphore(3))
+        acquired = False
+        local_acquired = False
+        try:
+            while time.monotonic() < deadline and not self._operation_cancelled():
+                if self._capture_lock.acquire(timeout=0.05):
+                    local_acquired = True
+                    break
+            if not local_acquired:
+                return None
+            while time.monotonic() < deadline and not self._operation_cancelled():
+                if gate.acquire(timeout=0.05):
+                    acquired = True
+                    break
+            if not acquired:
+                return None
+            self._capture_context.deadline = deadline
+            result = self._capture_screen_unlocked(grayscale)
+            return result if epoch == self._connection_epoch else None
+        except (OSError, subprocess.SubprocessError):
+            return None
+        finally:
+            self._capture_context.deadline = None
+            self._capture_context.epoch = self._connection_epoch
+            if acquired:
+                gate.release()
+            if local_acquired:
+                self._capture_lock.release()
+
+    def _capture_screen_unlocked(self, grayscale=None):
         """Capture with local raw fast path, PNG fallback and backend cooldown."""
         if self._operation_cancelled():
             return None
@@ -3995,9 +4131,12 @@ class AutoClicker:
             self._loop_wake_event.set()
             self._timeout_alert_active = False
 
+        self._cancel_capture()
+
     def request_shutdown(self):
         self._shutdown_event.set()
         self.stop_loop()
+        self._cancel_capture()
 
     def shutdown(self):
         self.request_shutdown()

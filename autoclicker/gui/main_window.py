@@ -1,3 +1,4 @@
+from autoclicker.gui.runtime import HangMonitor, LatestUpdates, SettingsWriter
 import os
 import sys
 import queue
@@ -80,6 +81,15 @@ class App(ctk.CTk):
         self._start_all_generation = 0
         self._initializing_tabs = True
         self._ui_queue = queue.SimpleQueue()
+        self._latest_updates = LatestUpdates()
+        self._diagnostics = HangMonitor(os.path.join(get_app_dir(), "logs"))
+        self._settings_writer = SettingsWriter(
+            lambda instances, settings: AutoClicker.update_instances_config(
+                instances, CONFIG_PATH, primary_settings=settings), self._diagnostics.logger)
+        self._alerts = {}
+        self._alert_window = None
+        self._retiring = set()
+        self._shutdown_done = threading.Event()
         self.opencv_lock = threading.Lock()
         self._ui_pump_id = self.after(50, self._drain_ui_queue)
         self._timer_pump_id = self.after(500, self._pump_timer_updates)
@@ -237,19 +247,54 @@ class App(ctk.CTk):
         if not self._closing:
             self._ui_queue.put(callback)
 
+    def post_latest(self, key, callback):
+        if not self._closing:
+            self._latest_updates.put(key, callback)
+
     def _drain_ui_queue(self):
         if self._closing:
             return
-        for _ in range(100):
+        started = time.perf_counter()
+        self._diagnostics.beat(queue=self._ui_queue.qsize(),
+                               updates=len(self._latest_updates),
+                               workers=threading.active_count(),
+                               stages={name: (frame.clicker._diagnostic_stage,
+                                   round(time.monotonic() - frame.clicker._diagnostic_started, 1))
+                                   for name, frame in self.tab_frames.items()})
+        # Alternate control and coalesced state so neither can starve the other.
+        for _ in range(50):
+            callbacks = []
             try:
-                callback = self._ui_queue.get_nowait()
+                callbacks.append(self._ui_queue.get_nowait())
             except queue.Empty:
-                break
-            try:
-                callback()
-            except Exception:
                 pass
-        self._ui_pump_id = self.after(50, self._drain_ui_queue)
+            latest = self._latest_updates.pop()
+            if latest is not None:
+                callbacks.append(latest)
+            if not callbacks:
+                break
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception:
+                    self._diagnostics.logger.exception("UI callback failed")
+            if time.perf_counter() - started >= 0.008:
+                break
+        self._ui_pump_id = self.after(25, self._drain_ui_queue)
+
+    def show_instance_alert(self, name, text):
+        self._alerts[name] = text
+        if self._alert_window is None or not self._alert_window.winfo_exists():
+            self._alert_window = ctk.CTkToplevel(self)
+            self._alert_window.title("인스턴스 경고")
+            self._alert_window.geometry("580x320")
+            self._alert_text = ctk.CTkTextbox(self._alert_window)
+            self._alert_text.pack(fill="both", expand=True, padx=12, pady=12)
+        self._alert_text.configure(state="normal")
+        self._alert_text.delete("1.0", "end")
+        self._alert_text.insert("end", "\n\n".join(
+            f"{key}: {value}" for key, value in self._alerts.items()))
+        self._alert_text.configure(state="disabled")
 
     def _pump_timer_updates(self):
         if self._closing:
@@ -259,6 +304,7 @@ class App(ctk.CTk):
         except Exception:
             current_tab = None
 
+        self._render_pending_counts()
         now = time.monotonic()
         for name, frame in tuple(self.tab_frames.items()):
             try:
@@ -367,8 +413,28 @@ class App(ctk.CTk):
         frame = self.tab_frames.pop(tab_name, None)
         if frame is None:
             return
-        frame.shutdown()
+        frame.begin_shutdown()
+        self._alerts.pop(tab_name, None)
+        tab_container = self.tabview.tab(tab_name)
         self.tabview.delete(tab_name)
+        done = threading.Event()
+        self._retiring.add(done)
+
+        def retire():
+            try:
+                frame.shutdown()
+            finally:
+                done.set()
+
+        def finish():
+            if not done.is_set():
+                self.after(50, finish)
+                return
+            self._retiring.discard(done)
+            tab_container.destroy()
+
+        threading.Thread(target=retire, daemon=True).start()
+        self.after(50, finish)
         self.save_app_config()
 
     def refresh_all_tabs_templates(self):
@@ -497,15 +563,28 @@ class App(ctk.CTk):
                     label.configure(text="0회")
 
     def update_template_count_for_all(self, filename, count, is_fallback):
-        for frame in tuple(self.tab_frames.values()):
-            labels = (
-                frame.fallback_template_count_labels
-                if is_fallback
-                else frame.template_count_labels
-            )
+        for name, frame in tuple(self.tab_frames.items()):
+            pending = getattr(frame, "_pending_counts", None)
+            if pending is None:
+                pending = frame._pending_counts = {}
+            # Read current shared counts when rendered to avoid stale delivery
+            # from a worker that was preempted before posting its callback.
+            counts = frame.clicker._live_counts.get(frame.clicker.config_path, {})
+            key = "fallback_template_counts" if is_fallback else "template_counts"
+            pending[(filename, is_fallback)] = counts.get(key, {}).get(filename, count)
+        self._render_pending_counts()
+
+    def _render_pending_counts(self):
+        frame = self.tab_frames.get(self.tabview.get())
+        if frame is None:
+            return
+        pending = getattr(frame, "_pending_counts", {})
+        for (filename, fallback), count in tuple(pending.items()):
+            labels = frame.fallback_template_count_labels if fallback else frame.template_count_labels
             label = labels.get(filename)
             if label is not None and label.winfo_exists():
                 label.configure(text=f"{count}회")
+        pending.clear()
 
     def start_all_clickers(self):
         self._start_all_generation += 1
@@ -586,33 +665,53 @@ class App(ctk.CTk):
         primary_settings = None
         if self.tab_frames:
             primary_settings = next(iter(self.tab_frames.values())).clicker._settings_dict()
-        return AutoClicker.update_instances_config(
-            instances_data,
-            CONFIG_PATH,
-            primary_settings=primary_settings,
-        )
+        return self._settings_writer.submit(instances_data, primary_settings)
 
     def on_closing(self):
         if self._closing:
             return
         self._closing = True
-        TemplatePreviewTooltip.get_instance().hide()
+        TemplatePreviewTooltip.release()
         self._start_all_generation += 1
         frames = tuple(self.tab_frames.values())
         for frame in frames:
             frame.begin_shutdown()
-        for frame in frames:
-            frame.shutdown()
-        self.save_app_config()
-        try:
-            self.after_cancel(self._ui_pump_id)
-        except Exception:
-            pass
-        try:
-            self.after_cancel(self._timer_pump_id)
-        except Exception:
-            pass
-        self.destroy()
+        # Snapshot Tk-owned state here; background work never reads widgets.
+        instances = [{"device_address": f.clicker.device_address} for f in frames]
+        settings = frames[0].clicker._settings_dict() if frames else None
+        retiring = tuple(self._retiring)
+        self.title("Auto Clicker — 종료 중...")
+
+        def shutdown():
+            try:
+                self._settings_writer.close()
+                for frame in frames:
+                    frame.shutdown()
+                for done in retiring:
+                    done.wait()
+                AutoClicker.update_instances_config(instances, CONFIG_PATH,
+                                                     primary_settings=settings)
+            except Exception:
+                self._diagnostics.logger.exception("Shutdown failed")
+            finally:
+                self._shutdown_done.set()
+
+        def finish():
+            self._diagnostics.beat(shutdown=True, workers=threading.active_count())
+            if not self._shutdown_done.is_set():
+                self.after(50, finish)
+                return
+            self._diagnostics.close()
+            # This app owns its Tcl interpreter. Cancel queued UI and CTk jobs
+            # before deleting their Tcl commands during widget destruction.
+            for timer_id in self.tk.call("after", "info"):
+                # Keep each command registered until its owning widget destroys
+                # it; root.after_cancel would delete child-owned commands twice.
+                self.tk.call("after", "cancel", timer_id)
+            self.destroy()
+
+        threading.Thread(target=shutdown, daemon=True).start()
+        self.after(50, finish)
 
 
 # Backward compatibility aliases

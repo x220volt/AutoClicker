@@ -44,3 +44,6 @@ templates/*
 !templates/.gitkeep
 fallback_templates/*
 !fallback_templates/.gitkeep
+
+# Bounded runtime diagnostics
+logs/

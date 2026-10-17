@@ -1,3 +1,4 @@
+from collections import deque
 import os
 import sys
 import threading
@@ -84,7 +85,8 @@ class InstanceTabFrame(ctk.CTkFrame):
         self._action_threads = set()
         self._action_threads_lock = threading.Lock()
         self._log_line_count = 1
-        self._log_buffer = []
+        self._log_buffer = deque(maxlen=150)
+        self._log_lock = threading.Lock()
         self._log_flush_scheduled = False
         self._log_press_pos = None
         self._flashing_row = None
@@ -325,7 +327,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             font=ctk.CTkFont(size=12),
         )
         self.primary_search_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        self.primary_search_var.trace_add("write", lambda *args: self.filter_templates(is_fallback=False))
+        self._primary_search_trace = self.primary_search_var.trace_add("write", lambda *args: self.filter_templates(is_fallback=False))
         self.primary_search_entry.bind("<Escape>", lambda e: self.clear_search(is_fallback=False))
 
         self.primary_clear_search_btn = ctk.CTkButton(
@@ -404,7 +406,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             font=ctk.CTkFont(size=12),
         )
         self.fallback_search_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        self.fallback_search_var.trace_add("write", lambda *args: self.filter_templates(is_fallback=True))
+        self._fallback_search_trace = self.fallback_search_var.trace_add("write", lambda *args: self.filter_templates(is_fallback=True))
         self.fallback_search_entry.bind("<Escape>", lambda e: self.clear_search(is_fallback=True))
 
         self.fallback_clear_search_btn = ctk.CTkButton(
@@ -511,6 +513,7 @@ class InstanceTabFrame(ctk.CTkFrame):
             self.log_textbox.configure(state="normal")
             self.log_textbox.delete("1.0", "end")
             self._log_line_count = 1
+            self._prune_log_tags()
             self.log_textbox.configure(state="disabled")
         except Exception:
             pass
@@ -556,35 +559,46 @@ class InstanceTabFrame(ctk.CTkFrame):
         if self._destroyed:
             return
         timestamp = time.strftime("[%H:%M:%S] ")
-        self._log_buffer.append(f"{timestamp}{message}\n")
-        if not self._log_flush_scheduled:
+        with self._log_lock:
+            # Bound both pending line count and individual line length.
+            for line in str(message).splitlines()[-150:]:
+                self._log_buffer.append(f"{timestamp}{line[:4096]}\n")
+            schedule = not self._log_flush_scheduled
             self._log_flush_scheduled = True
+        if schedule:
             self.app_owner.post_to_ui(self._flush_log_buffer)
 
     def _flush_log_buffer(self):
-        self._log_flush_scheduled = False
-        if self._destroyed or not self.winfo_exists():
+        with self._log_lock:
+            self._log_flush_scheduled = False
+            combined = "".join(self._log_buffer)
             self._log_buffer.clear()
+        if self._destroyed or not self.winfo_exists() or not combined:
             return
-        if not self._log_buffer:
-            return
-        combined = "".join(self._log_buffer)
-        lines_count = len(self._log_buffer)
-        self._log_buffer.clear()
 
         try:
             self.log_textbox.configure(state="normal")
             start_index = self.log_textbox._textbox.index("end-1c")
             self.log_textbox.insert("end", combined)
             self._apply_template_links(start_index, combined)
-            self._log_line_count += lines_count
-            if self._log_line_count > 150:
-                self.log_textbox.delete("1.0", "51.0")
-                self._log_line_count -= 50
+            self._log_line_count = int(
+                self.log_textbox._textbox.index("end-1c").split(".")[0]
+            ) - 1
+            excess = self._log_line_count - 150
+            if excess > 0:
+                self.log_textbox.delete("1.0", f"{excess + 1}.0")
+                self._log_line_count = 150
+                self._prune_log_tags()
             self.log_textbox.see("end")
             self.log_textbox.configure(state="disabled")
         except Exception:
             pass
+
+    def _prune_log_tags(self):
+        textbox = self.log_textbox._textbox
+        for tag in textbox.tag_names():
+            if tag.startswith("tpl_target::") and not textbox.tag_ranges(tag):
+                textbox.tag_delete(tag)
 
     def _setup_log_hyperlinks(self):
         try:
@@ -853,12 +867,9 @@ class InstanceTabFrame(ctk.CTkFrame):
         self._flash_restore_id = self.after(1500, _restore)
 
     def on_template_match(self, filename, count, is_fallback):
-        self.app_owner.post_to_ui(self.clear_warning_ui)
-        self.app_owner.post_to_ui(
-            lambda: self.app_owner.update_template_count_for_all(
-                filename, count, is_fallback
-            )
-        )
+        self.app_owner.post_latest((self.tab_name, "warning"), self.clear_warning_ui)
+        self.app_owner.post_latest(("count", filename, is_fallback),
+            lambda: self.app_owner.update_template_count_for_all(filename, count, is_fallback))
 
     def _set_tab_warning_state(self, is_warning):
         if self._destroyed or not hasattr(self.app_owner, "tabview"):
@@ -902,6 +913,9 @@ class InstanceTabFrame(ctk.CTkFrame):
             pass
 
     def clear_warning_ui(self):
+        if self._destroyed:
+            return
+        self.app_owner._alerts.pop(self.tab_name, None)
         self._alert_shown_for_current_timeout = False
         self._set_tab_warning_state(False)
         if hasattr(self, "normal_header_fg") and self.header_frame.winfo_exists():
@@ -1083,21 +1097,10 @@ class InstanceTabFrame(ctk.CTkFrame):
             except Exception:
                 pass
 
-            if not self.is_alert_open:
-                self.is_alert_open = True
-                from tkinter import messagebox
-                try:
-                    messagebox.showwarning(
-                        f"⚠️ 연속 매칭 경고 - [{self.tab_name}]",
-                        f"⚠️ 경고 발생 탭: {self.tab_name}\n"
-                        f"📱 디바이스 주소: {self.clicker.device_address}\n\n"
-                        f"⚠️ '{filename}' 템플릿이 연속으로 {count}회 매칭되었습니다!\n"
-                        "화면이 멈춰있거나 무한 루프 상태인지 확인해 주세요.",
-                    )
-                finally:
-                    self.is_alert_open = False
+            self.app_owner.show_instance_alert(self.tab_name,
+                f"'{filename}' 템플릿 {count}회 연속 매칭")
 
-        self.app_owner.post_to_ui(show_warning_ui)
+        self.app_owner.post_latest((self.tab_name, "warning"), show_warning_ui)
 
     def on_no_match_timeout(self, timeout_sec):
         generation = self._loop_generation
@@ -1123,22 +1126,11 @@ class InstanceTabFrame(ctk.CTkFrame):
             except Exception:
                 pass
 
-            if not self._alert_shown_for_current_timeout and not self.is_alert_open:
-                self._alert_shown_for_current_timeout = True
-                self.is_alert_open = True
-                from tkinter import messagebox
-                try:
-                    messagebox.showwarning(
-                        f"⚠️ 타임아웃 경고 - [{self.tab_name}]",
-                        f"⚠️ 경고 발생 탭: {self.tab_name}\n"
-                        f"📱 디바이스 주소: {self.clicker.device_address}\n\n"
-                        f"⚠️ 설정된 {timeout_sec}초 동안 어떠한 템플릿도 매칭되지 않았습니다!\n"
-                        "해당 에뮬레이터 화면 및 상태를 확인해 주세요.",
-                    )
-                finally:
-                    self.is_alert_open = False
+            self._alert_shown_for_current_timeout = True
+            self.app_owner.show_instance_alert(self.tab_name,
+                f"{timeout_sec}초간 매칭 미발생")
 
-        self.app_owner.post_to_ui(show_warning_ui)
+        self.app_owner.post_latest((self.tab_name, "warning"), show_warning_ui)
 
     def toggle_connection(self):
         self.save_settings()
@@ -1196,6 +1188,8 @@ class InstanceTabFrame(ctk.CTkFrame):
             self.start_clicker_loop()
 
     def start_clicker_loop(self):
+        if self._destroyed:
+            return
         if self.clicker.device is None:
             self.log_message("연결된 디바이스가 없습니다. 연결 후 시작해 주세요.")
             return
@@ -1287,6 +1281,28 @@ class InstanceTabFrame(ctk.CTkFrame):
             action_worker.join(remaining)
 
         self.clicker.shutdown()
+
+    def destroy(self):
+        # Tcl variable traces retain their Python closures independently of
+        # widget destruction, so remove our traces before destroying children.
+        for variable_name, trace_name in (
+            ("primary_search_var", "_primary_search_trace"),
+            ("fallback_search_var", "_fallback_search_trace"),
+        ):
+            variable = getattr(self, variable_name, None)
+            trace_id = getattr(self, trace_name, None)
+            if variable is not None and trace_id is not None:
+                variable.trace_remove("write", trace_id)
+                setattr(self, trace_name, None)
+        for timer_name in ("_flash_restore_id",):
+            timer_id = getattr(self, timer_name, None)
+            if timer_id is not None:
+                self.after_cancel(timer_id)
+                setattr(self, timer_name, None)
+        tooltip = TemplatePreviewTooltip._instance
+        if tooltip is not None:
+            tooltip.cancel()
+        super().destroy()
 
     def clear_search(self, is_fallback=False):
         if is_fallback:
@@ -1557,7 +1573,7 @@ class InstanceTabFrame(ctk.CTkFrame):
 
         worker = threading.Thread(target=run, daemon=True)
         with self._action_threads_lock:
-            if self._destroyed:
+            if self._destroyed or self._action_threads:
                 return None
             self._action_threads.add(worker)
         try:
@@ -1793,6 +1809,9 @@ class InstanceTabFrame(ctk.CTkFrame):
                 update_preview()
                 cancelled = False
                 while True:
+                    if self._destroyed:
+                        cancelled = True
+                        break
                     key = cv2.waitKey(30) & 0xFF
                     if key in (13, 32):
                         break
@@ -1828,7 +1847,8 @@ class InstanceTabFrame(ctk.CTkFrame):
                         pass
                 finish_picker()
 
-        threading.Thread(target=pick_task, daemon=True).start()
+        if self._start_action_worker(pick_task) is None:
+            finish_picker()
 
     def test_fallback_final_action(self):
         if self.clicker.device is None:
@@ -1841,11 +1861,17 @@ class InstanceTabFrame(ctk.CTkFrame):
             return
 
         def task():
-            screen = self.clicker.capture_screen()
-            if screen is None:
-                self.log_message("화면 캡처 실패")
+            if not self.clicker._action_lock.acquire(blocking=False):
+                self.log_message("다른 동작이 진행 중입니다. 잠시 후 다시 실행하세요.")
                 return
-            self.clicker._execute_final_action(screen, action_key)
+            try:
+                screen = self.clicker.capture_screen()
+                if screen is None:
+                    self.log_message("화면 캡처 실패")
+                    return
+                self.clicker._execute_final_action(screen, action_key)
+            finally:
+                self.clicker._action_lock.release()
 
         self._start_action_worker(task)
 
@@ -2116,6 +2142,9 @@ class InstanceTabFrame(ctk.CTkFrame):
 
                 cancelled_step1 = False
                 while True:
+                    if self._destroyed:
+                        cancelled_step1 = True
+                        break
                     key = cv2.waitKey(30) & 0xFF
                     if key in (13, 32):
                         if (
@@ -2233,6 +2262,9 @@ class InstanceTabFrame(ctk.CTkFrame):
                 update_preview()
                 cancelled = False
                 while True:
+                    if self._destroyed:
+                        cancelled = True
+                        break
                     key = cv2.waitKey(30) & 0xFF
                     if key in (13, 32):
                         break
@@ -2279,4 +2311,5 @@ class InstanceTabFrame(ctk.CTkFrame):
                         pass
                 finish_crop()
 
-        threading.Thread(target=crop_task, daemon=True).start()
+        if self._start_action_worker(crop_task) is None:
+            finish_crop()

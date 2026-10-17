@@ -21,6 +21,15 @@ class TemplatePreviewTooltip:
             cls._instance.root = root_window
         return cls._instance
 
+    @classmethod
+    def release(cls):
+        if cls._instance is not None:
+            cls._instance.cancel()
+            cls._instance.root = None
+            cls._instance = None
+        cls._image_cache.clear()
+        cls._image_cache_order.clear()
+
     def __init__(self, root_window=None):
         self.root = root_window
         self.tip_window = None
@@ -30,9 +39,13 @@ class TemplatePreviewTooltip:
     def schedule_show(self, widget, image_path, title_text="", offset_text=""):
         self.cancel()
         self._scheduled_widget = widget
-        self._hover_after_id = widget.after(
-            150, lambda: self.show(widget, image_path, title_text, offset_text)
-        )
+
+        def show_scheduled():
+            self._hover_after_id = None
+            self._scheduled_widget = None
+            self.show(widget, image_path, title_text, offset_text)
+
+        self._hover_after_id = widget.after(150, show_scheduled)
 
     def cancel(self, event=None):
         if self._hover_after_id and self._scheduled_widget:

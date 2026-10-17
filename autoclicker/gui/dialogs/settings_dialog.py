@@ -470,6 +470,9 @@ class SettingsWindow(ctk.CTkToplevel):
                 update_preview()
                 cancelled = False
                 while True:
+                    if self.parent_frame._destroyed:
+                        cancelled = True
+                        break
                     key = cv2.waitKey(30) & 0xFF
                     if key in (13, 32):
                         break
@@ -505,7 +508,8 @@ class SettingsWindow(ctk.CTkToplevel):
                         pass
                 finish_picker()
 
-        threading.Thread(target=pick_task, daemon=True).start()
+        if self.parent_frame._start_action_worker(pick_task) is None:
+            finish_picker()
 
     def _apply_form_values(self):
         try:
@@ -578,7 +582,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.parent_frame.app_owner.sync_shared_settings_to_all(self.parent_frame)
 
-    def _apply_adb_settings(self):
+    def _apply_adb_settings(self, validation=None):
         """Validate and atomically apply the pending ADB choice to every tab."""
         adb_mode = self.reverse_adb_mode_map.get(
             self.adb_mode_combo.get(), "bundled"
@@ -604,7 +608,8 @@ class SettingsWindow(ctk.CTkToplevel):
             self.clicker.base_dir,
         )
         valid, resolved_path, validation_message = (
-            self.clicker.validate_adb_executable(candidate_path)
+            validation if validation is not None
+            else self.clicker.validate_adb_executable(candidate_path)
         )
         if not valid:
             self.adb_status_label.configure(
@@ -632,11 +637,15 @@ class SettingsWindow(ctk.CTkToplevel):
         if changed:
             with ExitStack() as lock_stack:
                 for frame in frames:
-                    lock_stack.enter_context(frame.clicker._device_lock)
+                    if not frame.clicker._device_lock.acquire(blocking=False):
+                        self.adb_status_label.configure(text="연결 상태 변경 중입니다. 잠시 후 다시 저장하세요.")
+                        return False
+                    lock_stack.callback(frame.clicker._device_lock.release)
                 active_frames = [
                     frame
                     for frame in frames
                     if frame.clicker.device is not None
+                    or frame.clicker._connection_lock.locked()
                     or frame.clicker.is_running
                     or getattr(frame, "_loop_starting", False)
                 ]
@@ -685,11 +694,40 @@ class SettingsWindow(ctk.CTkToplevel):
         self._persist_settings()
 
     def close_window(self):
+        if getattr(self, "_validation_pending", False):
+            return
+        mode = self.reverse_adb_mode_map.get(self.adb_mode_combo.get(), "bundled")
+        custom = self.custom_adb_entry.get().strip()
+        path = resolve_adb_path(mode, custom, self.clicker.base_dir)
+        self._validation_pending = True
+        self.adb_status_label.configure(text="ADB 확인 중...")
+
+        def validate():
+            try:
+                result = self.clicker.validate_adb_executable(path)
+            except Exception as error:
+                result = (False, path, str(error))
+
+            def finish():
+                if not self.winfo_exists():
+                    return
+                self._validation_pending = False
+                current = (self.reverse_adb_mode_map.get(self.adb_mode_combo.get(), "bundled"),
+                           self.custom_adb_entry.get().strip())
+                if current != (mode, custom):
+                    self.adb_status_label.configure(text="설정이 변경되었습니다. 다시 저장하세요.")
+                    return
+                self._finish_close(result)
+            self.parent_frame.app_owner.post_to_ui(finish)
+
+        threading.Thread(target=validate, daemon=True).start()
+
+    def _finish_close(self, validation):
         if self._save_after_id is not None:
             self.after_cancel(self._save_after_id)
             self._save_after_id = None
         self._apply_form_values()
-        if not self._apply_adb_settings():
+        if not self._apply_adb_settings(validation):
             self._persist_settings()
             return
         self._persist_settings()
