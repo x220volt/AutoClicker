@@ -37,8 +37,15 @@ jobs:
           pip install pyinstaller
 
       - name: Run unit tests
+        shell: pwsh
         run: |
-          python -m unittest discover -s . -p "test_*.py" -v
+          $testOutput = python -m unittest discover -s . -p "test_*.py" -v 2>&1 | Out-String
+          Write-Host $testOutput
+          $testExitCode = $LASTEXITCODE
+          "### 🧪 Unit Tests Output`n````text`n$testOutput`n````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
 
       - name: Build executable with PyInstaller
         run: |
